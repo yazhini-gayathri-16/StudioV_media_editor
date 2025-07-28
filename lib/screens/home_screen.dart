@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'media_picker_screen.dart';
+import 'media_type_selection_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -23,7 +23,6 @@ class HomeScreen extends StatelessWidget {
         actions: [
           IconButton(
             onPressed: () {
-              // Navigate to settings
               _showSettingsDialog(context);
             },
             icon: const Icon(
@@ -38,7 +37,6 @@ class HomeScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            // Logo or App Icon
             Container(
               width: 120,
               height: 120,
@@ -55,24 +53,22 @@ class HomeScreen extends StatelessWidget {
             ),
             const SizedBox(height: 60),
             
-            // Edit Video Button
             _buildActionButton(
               context,
               'Edit Video',
               Icons.videocam,
               Colors.purple,
-              () => _navigateToMediaPicker(context, 'video'),
+              () => _navigateToMediaTypeSelection(context, 'video'),
             ),
             
             const SizedBox(height: 30),
             
-            // Edit Images Button
             _buildActionButton(
               context,
               'Edit Images',
               Icons.photo_library,
               Colors.blue,
-              () => _navigateToMediaPicker(context, 'image'),
+              () => _navigateToMediaTypeSelection(context, 'image'),
             ),
           ],
         ),
@@ -118,11 +114,11 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  void _navigateToMediaPicker(BuildContext context, String mediaType) {
+  void _navigateToMediaTypeSelection(BuildContext context, String mediaType) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => MediaPickerScreen(mediaType: mediaType),
+        builder: (context) => MediaTypeSelectionScreen(primaryType: mediaType),
       ),
     );
   }
@@ -153,7 +149,6 @@ class HomeScreen extends StatelessWidget {
                 title: const Text('Help', style: TextStyle(color: Colors.white)),
                 onTap: () {
                   Navigator.pop(context);
-                  // Add help functionality
                 },
               ),
             ],

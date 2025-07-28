@@ -7,8 +7,13 @@ import 'editor_screen.dart';
 
 class MediaPickerScreen extends StatefulWidget {
   final String mediaType;
+  final bool allowMixedSelection;
 
-  const MediaPickerScreen({Key? key, required this.mediaType}) : super(key: key);
+  const MediaPickerScreen({
+    Key? key, 
+    required this.mediaType,
+    this.allowMixedSelection = false,
+  }) : super(key: key);
 
   @override
   State<MediaPickerScreen> createState() => _MediaPickerScreenState();
@@ -48,8 +53,15 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     });
 
     try {
+      RequestType requestType;
+      if (widget.allowMixedSelection) {
+        requestType = RequestType.common; // This allows both images and videos
+      } else {
+        requestType = widget.mediaType == 'video' ? RequestType.video : RequestType.image;
+      }
+
       final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-        type: widget.mediaType == 'video' ? RequestType.video : RequestType.image,
+        type: requestType,
       );
 
       if (albums.isNotEmpty) {
@@ -58,8 +70,25 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
           end: 1000,
         );
 
+        // Filter based on current tab if needed
+        List<AssetEntity> filteredMedia = media;
+        if (!widget.allowMixedSelection) {
+          filteredMedia = media.where((asset) {
+            return widget.mediaType == 'video' 
+                ? asset.type == AssetType.video 
+                : asset.type == AssetType.image;
+          }).toList();
+        } else {
+          // For mixed selection, prioritize the current media type
+          filteredMedia = media.where((asset) {
+            return widget.mediaType == 'video' 
+                ? asset.type == AssetType.video 
+                : asset.type == AssetType.image;
+          }).toList();
+        }
+
         setState(() {
-          _mediaList = media;
+          _mediaList = filteredMedia;
           _isLoading = false;
         });
       }
@@ -88,7 +117,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
         MaterialPageRoute(
           builder: (context) => EditorScreen(
             selectedMedia: _selectedMedia,
-            mediaType: widget.mediaType,
+            mediaType: 'video', // Always use video editor for mixed content
           ),
         ),
       );
@@ -99,31 +128,15 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF2A2A2A),
-        title: Text(
-          'Select ${widget.mediaType == 'video' ? 'Videos' : 'Images'}',
-          style: const TextStyle(color: Colors.white),
-        ),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () => Navigator.pop(context),
-        ),
-        actions: [
-          if (_selectedMedia.isNotEmpty)
-            TextButton(
-              onPressed: _proceedToEditor,
-              child: Text(
-                'Next (${_selectedMedia.length})',
-                style: const TextStyle(
-                  color: Colors.purple,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-        ],
-      ),
       body: _buildBody(),
+      floatingActionButton: _selectedMedia.isNotEmpty
+          ? FloatingActionButton.extended(
+              onPressed: _proceedToEditor,
+              backgroundColor: Colors.purple,
+              icon: const Icon(Icons.arrow_forward),
+              label: Text('Next (${_selectedMedia.length})'),
+            )
+          : null,
     );
   }
 

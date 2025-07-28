@@ -53,6 +53,24 @@ class MediaItemWidget extends StatelessWidget {
             ),
           ),
           
+          // Media type indicator
+          Positioned(
+            top: 4,
+            left: 4,
+            child: Container(
+              padding: const EdgeInsets.all(2),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Icon(
+                asset.type == AssetType.video ? Icons.videocam : Icons.photo,
+                color: Colors.white,
+                size: 12,
+              ),
+            ),
+          ),
+          
           // Video duration indicator
           if (asset.type == AssetType.video)
             Positioned(
