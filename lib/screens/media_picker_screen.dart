@@ -3,6 +3,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../widgets/media_item_widget.dart';
+import '../models/media_clip.dart';
 import 'editor_screen.dart';
 
 class MediaPickerScreen extends StatefulWidget {
@@ -53,15 +54,9 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     });
 
     try {
-      RequestType requestType;
-      if (widget.allowMixedSelection) {
-        requestType = RequestType.common; // This allows both images and videos
-      } else {
-        requestType = widget.mediaType == 'video' ? RequestType.video : RequestType.image;
-      }
-
+      // Always load both images and videos for mixed selection
       final List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-        type: requestType,
+        type: RequestType.common,
       );
 
       if (albums.isNotEmpty) {
@@ -70,22 +65,24 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
           end: 1000,
         );
 
-        // Filter based on current tab if needed
+        // Show all media types but prioritize the selected tab
         List<AssetEntity> filteredMedia = media;
-        if (!widget.allowMixedSelection) {
-          filteredMedia = media.where((asset) {
-            return widget.mediaType == 'video' 
-                ? asset.type == AssetType.video 
-                : asset.type == AssetType.image;
-          }).toList();
-        } else {
-          // For mixed selection, prioritize the current media type
-          filteredMedia = media.where((asset) {
-            return widget.mediaType == 'video' 
-                ? asset.type == AssetType.video 
-                : asset.type == AssetType.image;
-          }).toList();
-        }
+        
+        // Sort to show the current media type first
+        filteredMedia.sort((a, b) {
+          bool aIsCurrentType = widget.mediaType == 'video' 
+              ? a.type == AssetType.video 
+              : a.type == AssetType.image;
+          bool bIsCurrentType = widget.mediaType == 'video' 
+              ? b.type == AssetType.video 
+              : b.type == AssetType.image;
+          
+          if (aIsCurrentType && !bIsCurrentType) return -1;
+          if (!aIsCurrentType && bIsCurrentType) return 1;
+          
+          // Secondary sort by creation date (newest first)
+          return b.createDateTime.compareTo(a.createDateTime);
+        });
 
         setState(() {
           _mediaList = filteredMedia;
@@ -110,14 +107,36 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     });
   }
 
-  void _proceedToEditor() {
+  Future<void> _proceedToEditor() async {
     if (_selectedMedia.isNotEmpty) {
+      // Convert selected media to MediaClip objects
+      List<MediaClip> mediaClips = [];
+      
+      for (int i = 0; i < _selectedMedia.length; i++) {
+        final asset = _selectedMedia[i];
+        Duration originalDuration = Duration.zero;
+        
+        if (asset.type == AssetType.video) {
+          originalDuration = Duration(seconds: asset.duration);
+        } else {
+          // For images, set a default duration of 3 seconds
+          originalDuration = const Duration(seconds: 3);
+        }
+        
+        mediaClips.add(MediaClip(
+          asset: asset,
+          startTime: Duration.zero,
+          endTime: originalDuration,
+          originalDuration: originalDuration,
+          selectionOrder: i + 1,
+        ));
+      }
+
       Navigator.push(
         context,
         MaterialPageRoute(
           builder: (context) => EditorScreen(
-            selectedMedia: _selectedMedia,
-            mediaType: 'video', // Always use video editor for mixed content
+            mediaClips: mediaClips,
           ),
         ),
       );
@@ -225,18 +244,18 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
             color: Colors.grey,
           ),
           const SizedBox(height: 20),
-          Text(
-            'No ${widget.mediaType}s found',
-            style: const TextStyle(
+          const Text(
+            'No media found',
+            style: TextStyle(
               color: Colors.white,
               fontSize: 24,
               fontWeight: FontWeight.bold,
             ),
           ),
           const SizedBox(height: 10),
-          Text(
-            'Add some ${widget.mediaType}s to your device to get started',
-            style: const TextStyle(color: Colors.grey),
+          const Text(
+            'Add some photos or videos to your device to get started',
+            style: TextStyle(color: Colors.grey),
             textAlign: TextAlign.center,
           ),
         ],

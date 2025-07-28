@@ -1,16 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
+import '../models/media_clip.dart';
+import '../widgets/timeline_clip_widget.dart';
 import 'dart:io';
 
 class EditorScreen extends StatefulWidget {
-  final List<AssetEntity> selectedMedia;
-  final String mediaType;
+  final List<MediaClip> mediaClips;
 
   const EditorScreen({
     Key? key,
-    required this.selectedMedia,
-    required this.mediaType,
+    required this.mediaClips,
   }) : super(key: key);
 
   @override
@@ -18,16 +18,19 @@ class EditorScreen extends StatefulWidget {
 }
 
 class _EditorScreenState extends State<EditorScreen> {
-  int _currentIndex = 0;
+  int _currentClipIndex = 0;
   VideoPlayerController? _videoController;
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
-  Duration _videoDuration = Duration.zero;
-  Duration _currentPosition = Duration.zero;
+  Duration _totalProjectDuration = Duration.zero;
+  Duration _currentProjectPosition = Duration.zero;
+  List<MediaClip> _mediaClips = [];
 
   @override
   void initState() {
     super.initState();
+    _mediaClips = List.from(widget.mediaClips);
+    _calculateTotalDuration();
     _initializeCurrentMedia();
   }
 
@@ -37,11 +40,20 @@ class _EditorScreenState extends State<EditorScreen> {
     super.dispose();
   }
 
+  void _calculateTotalDuration() {
+    _totalProjectDuration = _mediaClips.fold(
+      Duration.zero,
+      (total, clip) => total + clip.trimmedDuration,
+    );
+  }
+
   Future<void> _initializeCurrentMedia() async {
-    final currentAsset = widget.selectedMedia[_currentIndex];
+    if (_currentClipIndex >= _mediaClips.length) return;
     
-    if (currentAsset.type == AssetType.video) {
-      await _initializeVideo(currentAsset);
+    final currentClip = _mediaClips[_currentClipIndex];
+    
+    if (currentClip.asset.type == AssetType.video) {
+      await _initializeVideo(currentClip);
     } else {
       _videoController?.dispose();
       _videoController = null;
@@ -52,23 +64,19 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
-  Future<void> _initializeVideo(AssetEntity asset) async {
+  Future<void> _initializeVideo(MediaClip clip) async {
     try {
-      final file = await asset.file;
+      final file = await clip.asset.file;
       if (file != null) {
         _videoController?.dispose();
         _videoController = VideoPlayerController.file(file);
         
         await _videoController!.initialize();
         
-        _videoController!.addListener(() {
-          if (mounted) {
-            setState(() {
-              _currentPosition = _videoController!.value.position;
-              _videoDuration = _videoController!.value.duration;
-            });
-          }
-        });
+        // Seek to the start time of the clip
+        await _videoController!.seekTo(clip.startTime);
+        
+        _videoController!.addListener(_videoListener);
 
         setState(() {
           _isVideoInitialized = true;
@@ -80,8 +88,62 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  void _videoListener() {
+    if (!mounted || _videoController == null) return;
+    
+    final currentClip = _mediaClips[_currentClipIndex];
+    final position = _videoController!.value.position;
+    
+    setState(() {
+      _currentProjectPosition = _getProjectPosition(position);
+    });
+    
+    // Check if we've reached the end of the current clip
+    if (position >= currentClip.endTime) {
+      _playNextClip();
+    }
+  }
+
+  Duration _getProjectPosition(Duration currentClipPosition) {
+    Duration projectPosition = Duration.zero;
+    
+    // Add duration of all previous clips
+    for (int i = 0; i < _currentClipIndex; i++) {
+      projectPosition += _mediaClips[i].trimmedDuration;
+    }
+    
+    // Add current position within the current clip
+    final currentClip = _mediaClips[_currentClipIndex];
+    final clipProgress = currentClipPosition - currentClip.startTime;
+    projectPosition += clipProgress;
+    
+    return projectPosition;
+  }
+
+  void _playNextClip() {
+    if (_currentClipIndex < _mediaClips.length - 1) {
+      setState(() {
+        _currentClipIndex++;
+      });
+      _initializeCurrentMedia();
+      if (_isPlaying) {
+        // Auto-play the next clip
+        Future.delayed(const Duration(milliseconds: 100), () {
+          _togglePlayPause();
+        });
+      }
+    } else {
+      // End of all clips
+      setState(() {
+        _isPlaying = false;
+      });
+    }
+  }
+
   void _togglePlayPause() {
-    if (_videoController != null && _isVideoInitialized) {
+    final currentClip = _mediaClips[_currentClipIndex];
+    
+    if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
       setState(() {
         if (_isPlaying) {
           _videoController!.pause();
@@ -91,20 +153,77 @@ class _EditorScreenState extends State<EditorScreen> {
           _isPlaying = true;
         }
       });
+    } else if (currentClip.asset.type == AssetType.image) {
+      // For images, simulate playback by showing for the duration
+      setState(() {
+        _isPlaying = !_isPlaying;
+      });
+      
+      if (_isPlaying) {
+        Future.delayed(currentClip.trimmedDuration, () {
+          if (mounted && _isPlaying) {
+            _playNextClip();
+          }
+        });
+      }
     }
   }
 
-  void _seekTo(Duration position) {
-    if (_videoController != null && _isVideoInitialized) {
-      _videoController!.seekTo(position);
-    }
+  void _onClipTrimmed(int clipIndex, Duration newStartTime, Duration newEndTime) {
+    setState(() {
+      _mediaClips[clipIndex] = _mediaClips[clipIndex].copyWith(
+        startTime: newStartTime,
+        endTime: newEndTime,
+      );
+    });
+    _calculateTotalDuration();
   }
 
   String _formatDuration(Duration duration) {
     String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
-    return '$minutes:$seconds';
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    final milliseconds = (duration.inMilliseconds.remainder(1000) / 10).floor();
+    return '${twoDigits(minutes)}:${twoDigits(seconds)}.${twoDigits(milliseconds)}';
+  }
+
+  void _showExportDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          title: const Text('Export Project', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Total Duration: ${_formatDuration(_totalProjectDuration)}',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Clips: ${_mediaClips.length}',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                // Implement export logic
+              },
+              child: const Text('Export', style: TextStyle(color: Colors.purple)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   @override
@@ -160,43 +279,60 @@ class _EditorScreenState extends State<EditorScreen> {
                   Center(
                     child: _buildPreview(),
                   ),
-                  // Play/Pause overlay for videos
-                  if (widget.selectedMedia[_currentIndex].type == AssetType.video)
-                    Positioned.fill(
-                      child: GestureDetector(
-                        onTap: _togglePlayPause,
-                        child: Container(
-                          color: Colors.transparent,
-                          child: Center(
-                            child: AnimatedOpacity(
-                              opacity: _isPlaying ? 0.0 : 1.0,
-                              duration: const Duration(milliseconds: 300),
-                              child: Container(
-                                width: 80,
-                                height: 80,
-                                decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.7),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.play_arrow,
-                                  color: Colors.white,
-                                  size: 40,
-                                ),
+                  // Play/Pause overlay
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: _togglePlayPause,
+                      child: Container(
+                        color: Colors.transparent,
+                        child: Center(
+                          child: AnimatedOpacity(
+                            opacity: _isPlaying ? 0.0 : 1.0,
+                            duration: const Duration(milliseconds: 300),
+                            child: Container(
+                              width: 80,
+                              height: 80,
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.7),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.play_arrow,
+                                color: Colors.white,
+                                size: 40,
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  // Video controls
-                  if (_isVideoInitialized && _videoController != null)
-                    Positioned(
-                      bottom: 20,
-                      left: 20,
-                      right: 20,
-                      child: _buildVideoControls(),
+                  ),
+                  // Project time indicator
+                  Positioned(
+                    bottom: 20,
+                    left: 20,
+                    right: 20,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            _formatDuration(_currentProjectPosition),
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                          ),
+                          Text(
+                            _formatDuration(_totalProjectDuration),
+                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                          ),
+                        ],
+                      ),
                     ),
+                  ),
                 ],
               ),
             ),
@@ -220,9 +356,9 @@ class _EditorScreenState extends State<EditorScreen> {
             ),
           ),
           
-          // Timeline and Add Button
+          // Timeline Section
           Container(
-            height: 120,
+            height: 140,
             color: const Color(0xFF1A1A1A),
             child: Column(
               children: [
@@ -241,33 +377,21 @@ class _EditorScreenState extends State<EditorScreen> {
                         mini: true,
                       ),
                     ),
-                    // Timeline
+                    // Timeline with clips
                     Expanded(
                       child: Container(
                         height: 80,
-                        child: _buildTimeline(),
+                        child: _buildEnhancedTimeline(),
                       ),
                     ),
                   ],
                 ),
                 // Time indicators
-                if (_isVideoInitialized)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _formatDuration(_currentPosition),
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                        Text(
-                          _formatDuration(_videoDuration),
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
-                        ),
-                      ],
-                    ),
-                  ),
+                Container(
+                  height: 40,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: _buildTimeIndicators(),
+                ),
               ],
             ),
           ),
@@ -277,16 +401,20 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Widget _buildPreview() {
-    final currentAsset = widget.selectedMedia[_currentIndex];
+    if (_currentClipIndex >= _mediaClips.length) {
+      return const Text('No media selected', style: TextStyle(color: Colors.white));
+    }
+
+    final currentClip = _mediaClips[_currentClipIndex];
     
-    if (currentAsset.type == AssetType.video && _isVideoInitialized && _videoController != null) {
+    if (currentClip.asset.type == AssetType.video && _isVideoInitialized && _videoController != null) {
       return AspectRatio(
         aspectRatio: _videoController!.value.aspectRatio,
         child: VideoPlayer(_videoController!),
       );
     } else {
       return FutureBuilder<Widget>(
-        future: _buildImagePreview(currentAsset),
+        future: _buildImagePreview(currentClip.asset),
         builder: (context, snapshot) {
           if (snapshot.hasData) {
             return snapshot.data!;
@@ -313,37 +441,6 @@ class _EditorScreenState extends State<EditorScreen> {
     }
     
     return const Text('Error loading preview', style: TextStyle(color: Colors.white));
-  }
-
-  Widget _buildVideoControls() {
-    return Row(
-      children: [
-        IconButton(
-          onPressed: _togglePlayPause,
-          icon: Icon(
-            _isPlaying ? Icons.pause : Icons.play_arrow,
-            color: Colors.white,
-          ),
-        ),
-        Expanded(
-          child: Slider(
-            value: _currentPosition.inMilliseconds.toDouble(),
-            max: _videoDuration.inMilliseconds.toDouble(),
-            onChanged: (value) {
-              _seekTo(Duration(milliseconds: value.toInt()));
-            },
-            activeColor: Colors.purple,
-            inactiveColor: Colors.grey,
-          ),
-        ),
-        IconButton(
-          onPressed: () {
-            // Fullscreen functionality
-          },
-          icon: const Icon(Icons.fullscreen, color: Colors.white),
-        ),
-      ],
-    );
   }
 
   Widget _buildToolButton(IconData icon, String label, bool hasNotification) {
@@ -388,119 +485,64 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Widget _buildTimeline() {
+  Widget _buildEnhancedTimeline() {
     return ListView.builder(
       scrollDirection: Axis.horizontal,
-      itemCount: widget.selectedMedia.length,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      itemCount: _mediaClips.length,
       itemBuilder: (context, index) {
-        final asset = widget.selectedMedia[index];
-        final isSelected = index == _currentIndex;
+        final clip = _mediaClips[index];
+        final isSelected = index == _currentClipIndex;
         
-        return GestureDetector(
+        return TimelineClipWidget(
+          clip: clip,
+          isSelected: isSelected,
           onTap: () {
             setState(() {
-              _currentIndex = index;
+              _currentClipIndex = index;
             });
             _initializeCurrentMedia();
           },
-          child: Container(
-            width: 80,
-            height: 60,
-            margin: const EdgeInsets.only(right: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              border: isSelected
-                  ? Border.all(color: Colors.purple, width: 2)
-                  : Border.all(color: Colors.grey, width: 1),
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: FutureBuilder<Widget>(
-                future: _buildThumbnail(asset),
-                builder: (context, snapshot) {
-                  if (snapshot.hasData) {
-                    return snapshot.data!;
-                  }
-                  return Container(
-                    color: Colors.grey[800],
-                    child: const Icon(Icons.photo, color: Colors.white),
-                  );
-                },
-              ),
-            ),
-          ),
+          onTrimChanged: (newStartTime, newEndTime) {
+            _onClipTrimmed(index, newStartTime, newEndTime);
+          },
         );
       },
     );
   }
 
-  Future<Widget> _buildThumbnail(AssetEntity asset) async {
-    try {
-      final thumbnail = await asset.thumbnailDataWithSize(
-        const ThumbnailSize(80, 60),
+  Widget _buildTimeIndicators() {
+    List<Widget> indicators = [];
+    Duration currentTime = Duration.zero;
+    
+    for (int i = 0; i < _mediaClips.length; i++) {
+      final clip = _mediaClips[i];
+      
+      indicators.add(
+        Positioned(
+          left: (currentTime.inMilliseconds / _totalProjectDuration.inMilliseconds) * 
+                (MediaQuery.of(context).size.width - 80),
+          child: Text(
+            _formatDuration(currentTime),
+            style: const TextStyle(color: Colors.white, fontSize: 10),
+          ),
+        ),
       );
       
-      if (thumbnail != null) {
-        return Stack(
-          children: [
-            Image.memory(
-              thumbnail,
-              fit: BoxFit.cover,
-              width: 80,
-              height: 60,
-            ),
-            if (asset.type == AssetType.video)
-              const Positioned(
-                bottom: 2,
-                right: 2,
-                child: Icon(
-                  Icons.play_circle_filled,
-                  color: Colors.white,
-                  size: 16,
-                ),
-              ),
-          ],
-        );
-      }
-    } catch (e) {
-      print('Error loading thumbnail: $e');
+      currentTime += clip.trimmedDuration;
     }
     
-    return Container(
-      color: Colors.grey[800],
-      child: Icon(
-        asset.type == AssetType.video ? Icons.videocam : Icons.photo,
-        color: Colors.white,
+    // Add final time indicator
+    indicators.add(
+      Positioned(
+        right: 0,
+        child: Text(
+          _formatDuration(_totalProjectDuration),
+          style: const TextStyle(color: Colors.white, fontSize: 10),
+        ),
       ),
     );
+    
+      return Stack(children: indicators);
+    }
   }
-
-  void _showExportDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('Export Media', style: TextStyle(color: Colors.white)),
-          content: const Text(
-            'Export functionality will be implemented here.',
-            style: TextStyle(color: Colors.white70),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                // Implement export logic
-              },
-              child: const Text('Export', style: TextStyle(color: Colors.purple)),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
