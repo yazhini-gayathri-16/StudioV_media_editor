@@ -3,7 +3,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 import '../models/media_clip.dart';
 import '../widgets/timeline_clip_widget.dart';
-import 'dart:io';
+import 'dart:async';
 
 class EditorScreen extends StatefulWidget {
   final List<MediaClip> mediaClips;
@@ -25,6 +25,8 @@ class _EditorScreenState extends State<EditorScreen> {
   Duration _totalProjectDuration = Duration.zero;
   Duration _currentProjectPosition = Duration.zero;
   List<MediaClip> _mediaClips = [];
+  Timer? _imageTimer;
+  bool _isTransitioning = false;
 
   @override
   void initState() {
@@ -37,6 +39,7 @@ class _EditorScreenState extends State<EditorScreen> {
   @override
   void dispose() {
     _videoController?.dispose();
+    _imageTimer?.cancel();
     super.dispose();
   }
 
@@ -55,12 +58,7 @@ class _EditorScreenState extends State<EditorScreen> {
     if (currentClip.asset.type == AssetType.video) {
       await _initializeVideo(currentClip);
     } else {
-      _videoController?.dispose();
-      _videoController = null;
-      setState(() {
-        _isVideoInitialized = false;
-        _isPlaying = false;
-      });
+      await _initializeImage(currentClip);
     }
   }
 
@@ -88,8 +86,19 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  Future<void> _initializeImage(MediaClip clip) async {
+    _videoController?.dispose();
+    _videoController = null;
+    _imageTimer?.cancel();
+    
+    setState(() {
+      _isVideoInitialized = false;
+      _isPlaying = false;
+    });
+  }
+
   void _videoListener() {
-    if (!mounted || _videoController == null) return;
+    if (!mounted || _videoController == null || _isTransitioning) return;
     
     final currentClip = _mediaClips[_currentClipIndex];
     final position = _videoController!.value.position;
@@ -98,13 +107,13 @@ class _EditorScreenState extends State<EditorScreen> {
       _currentProjectPosition = _getProjectPosition(position);
     });
     
-    // Check if we've reached the end of the current clip
+    // Check if we've reached the end of the current clip (with trimming)
     if (position >= currentClip.endTime) {
       _playNextClip();
     }
   }
 
-  Duration _getProjectPosition(Duration currentClipPosition) {
+    Duration _getProjectPosition(Duration currentClipPosition) {
     Duration projectPosition = Duration.zero;
     
     // Add duration of all previous clips
@@ -114,28 +123,56 @@ class _EditorScreenState extends State<EditorScreen> {
     
     // Add current position within the current clip
     final currentClip = _mediaClips[_currentClipIndex];
-    final clipProgress = currentClipPosition - currentClip.startTime;
-    projectPosition += clipProgress;
+    if (currentClip.asset.type == AssetType.video) {
+      // Convert to milliseconds, clamp, then convert back to Duration
+      final clipProgressMs = (currentClipPosition - currentClip.startTime)
+          .inMilliseconds
+          .clamp(0, currentClip.trimmedDuration.inMilliseconds);
+      projectPosition += Duration(milliseconds: clipProgressMs);
+    } else {
+      // For images, calculate based on elapsed time
+      projectPosition += _currentProjectPosition - _getPreviousClipsDuration();
+    }
     
     return projectPosition;
   }
 
-  void _playNextClip() {
+  Duration _getPreviousClipsDuration() {
+    Duration duration = Duration.zero;
+    for (int i = 0; i < _currentClipIndex; i++) {
+      duration += _mediaClips[i].trimmedDuration;
+    }
+    return duration;
+  }
+
+  void _playNextClip() async {
+    if (_isTransitioning) return;
+    
+    _isTransitioning = true;
+    
     if (_currentClipIndex < _mediaClips.length - 1) {
       setState(() {
         _currentClipIndex++;
       });
-      _initializeCurrentMedia();
+      
+      await _initializeCurrentMedia();
+      
       if (_isPlaying) {
-        // Auto-play the next clip
-        Future.delayed(const Duration(milliseconds: 100), () {
-          _togglePlayPause();
+        // Auto-play the next clip after a short delay
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) {
+            _isTransitioning = false;
+            _togglePlayPause();
+          }
         });
+      } else {
+        _isTransitioning = false;
       }
     } else {
       // End of all clips
       setState(() {
         _isPlaying = false;
+        _isTransitioning = false;
       });
     }
   }
@@ -154,17 +191,19 @@ class _EditorScreenState extends State<EditorScreen> {
         }
       });
     } else if (currentClip.asset.type == AssetType.image) {
-      // For images, simulate playback by showing for the duration
       setState(() {
         _isPlaying = !_isPlaying;
       });
       
       if (_isPlaying) {
-        Future.delayed(currentClip.trimmedDuration, () {
+        _imageTimer?.cancel();
+        _imageTimer = Timer(currentClip.trimmedDuration, () {
           if (mounted && _isPlaying) {
             _playNextClip();
           }
         });
+      } else {
+        _imageTimer?.cancel();
       }
     }
   }
@@ -177,6 +216,11 @@ class _EditorScreenState extends State<EditorScreen> {
       );
     });
     _calculateTotalDuration();
+    
+    // If we're currently playing the trimmed clip, reinitialize it
+    if (clipIndex == _currentClipIndex) {
+      _initializeCurrentMedia();
+    }
   }
 
   String _formatDuration(Duration duration) {
@@ -185,45 +229,6 @@ class _EditorScreenState extends State<EditorScreen> {
     final seconds = duration.inSeconds.remainder(60);
     final milliseconds = (duration.inMilliseconds.remainder(1000) / 10).floor();
     return '${twoDigits(minutes)}:${twoDigits(seconds)}.${twoDigits(milliseconds)}';
-  }
-
-  void _showExportDialog() {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('Export Project', style: TextStyle(color: Colors.white)),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Total Duration: ${_formatDuration(_totalProjectDuration)}',
-                style: const TextStyle(color: Colors.white70),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                'Clips: ${_mediaClips.length}',
-                style: const TextStyle(color: Colors.white70),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () {
-                Navigator.pop(context);
-                // Implement export logic
-              },
-              child: const Text('Export', style: TextStyle(color: Colors.purple)),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   @override
@@ -543,6 +548,45 @@ class _EditorScreenState extends State<EditorScreen> {
       ),
     );
     
-      return Stack(children: indicators);
-    }
+    return Stack(children: indicators);
   }
+
+  void _showExportDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF2A2A2A),
+          title: const Text('Export Project', style: TextStyle(color: Colors.white)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Total Duration: ${_formatDuration(_totalProjectDuration)}',
+                style: const TextStyle(color: Colors.white70),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Clips: ${_mediaClips.length}',
+                style: const TextStyle(color: Colors.white70),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                // Implement export logic
+              },
+              child: const Text('Export', style: TextStyle(color: Colors.purple)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}

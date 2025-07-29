@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
 import 'media_picker_screen.dart';
+import '../models/shared_selection_state.dart';
+import '../models/media_clip.dart';
+import 'editor_screen.dart';
 
 class MediaTypeSelectionScreen extends StatefulWidget {
   final String primaryType;
@@ -14,6 +18,7 @@ class _MediaTypeSelectionScreenState extends State<MediaTypeSelectionScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
   int _selectedTabIndex = 0;
+  final SharedSelectionState _selectionState = SharedSelectionState();
 
   @override
   void initState() {
@@ -21,12 +26,56 @@ class _MediaTypeSelectionScreenState extends State<MediaTypeSelectionScreen>
     _tabController = TabController(length: 2, vsync: this);
     _selectedTabIndex = widget.primaryType == 'video' ? 0 : 1;
     _tabController.index = _selectedTabIndex;
+    _selectionState.clearSelection(); // Clear previous selections
+    _selectionState.addListener(_onSelectionChanged);
   }
 
   @override
   void dispose() {
+    _selectionState.removeListener(_onSelectionChanged);
     _tabController.dispose();
     super.dispose();
+  }
+
+  void _onSelectionChanged() {
+    setState(() {}); // Rebuild to update the floating action button
+  }
+
+  Future<void> _proceedToEditor() async {
+    final selectedMedia = _selectionState.selectedMedia;
+    if (selectedMedia.isNotEmpty) {
+      // Convert selected media to MediaClip objects
+      List<MediaClip> mediaClips = [];
+      
+      for (int i = 0; i < selectedMedia.length; i++) {
+        final asset = selectedMedia[i];
+        Duration originalDuration = Duration.zero;
+        
+        if (asset.type == AssetType.video) {
+          originalDuration = Duration(seconds: asset.duration);
+        } else {
+          // For images, set a default duration of 3 seconds
+          originalDuration = const Duration(seconds: 3);
+        }
+        
+        mediaClips.add(MediaClip(
+          asset: asset,
+          startTime: Duration.zero,
+          endTime: originalDuration,
+          originalDuration: originalDuration,
+          selectionOrder: i + 1,
+        ));
+      }
+
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => EditorScreen(
+            mediaClips: mediaClips,
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -78,6 +127,14 @@ class _MediaTypeSelectionScreenState extends State<MediaTypeSelectionScreen>
           ),
         ],
       ),
+      floatingActionButton: _selectionState.selectedMedia.isNotEmpty
+          ? FloatingActionButton.extended(
+              onPressed: _proceedToEditor,
+              backgroundColor: Colors.purple,
+              icon: const Icon(Icons.arrow_forward),
+              label: Text('Next (${_selectionState.selectedMedia.length})'),
+            )
+          : null,
     );
   }
 }

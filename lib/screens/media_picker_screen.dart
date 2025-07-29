@@ -3,8 +3,7 @@ import 'package:photo_manager/photo_manager.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../widgets/media_item_widget.dart';
-import '../models/media_clip.dart';
-import 'editor_screen.dart';
+import '../models/shared_selection_state.dart';
 
 class MediaPickerScreen extends StatefulWidget {
   final String mediaType;
@@ -22,14 +21,25 @@ class MediaPickerScreen extends StatefulWidget {
 
 class _MediaPickerScreenState extends State<MediaPickerScreen> {
   List<AssetEntity> _mediaList = [];
-  List<AssetEntity> _selectedMedia = [];
   bool _isLoading = true;
   bool _hasPermission = false;
+  final SharedSelectionState _selectionState = SharedSelectionState();
 
   @override
   void initState() {
     super.initState();
     _requestPermissionAndLoadMedia();
+    _selectionState.addListener(_onSelectionChanged);
+  }
+
+  @override
+  void dispose() {
+    _selectionState.removeListener(_onSelectionChanged);
+    super.dispose();
+  }
+
+  void _onSelectionChanged() {
+    setState(() {}); // Rebuild to update selection indicators
   }
 
   Future<void> _requestPermissionAndLoadMedia() async {
@@ -98,48 +108,10 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
   }
 
   void _toggleSelection(AssetEntity asset) {
-    setState(() {
-      if (_selectedMedia.contains(asset)) {
-        _selectedMedia.remove(asset);
-      } else {
-        _selectedMedia.add(asset);
-      }
-    });
-  }
-
-  Future<void> _proceedToEditor() async {
-    if (_selectedMedia.isNotEmpty) {
-      // Convert selected media to MediaClip objects
-      List<MediaClip> mediaClips = [];
-      
-      for (int i = 0; i < _selectedMedia.length; i++) {
-        final asset = _selectedMedia[i];
-        Duration originalDuration = Duration.zero;
-        
-        if (asset.type == AssetType.video) {
-          originalDuration = Duration(seconds: asset.duration);
-        } else {
-          // For images, set a default duration of 3 seconds
-          originalDuration = const Duration(seconds: 3);
-        }
-        
-        mediaClips.add(MediaClip(
-          asset: asset,
-          startTime: Duration.zero,
-          endTime: originalDuration,
-          originalDuration: originalDuration,
-          selectionOrder: i + 1,
-        ));
-      }
-
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => EditorScreen(
-            mediaClips: mediaClips,
-          ),
-        ),
-      );
+    if (_selectionState.isSelected(asset)) {
+      _selectionState.removeMedia(asset);
+    } else {
+      _selectionState.addMedia(asset);
     }
   }
 
@@ -148,14 +120,6 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       body: _buildBody(),
-      floatingActionButton: _selectedMedia.isNotEmpty
-          ? FloatingActionButton.extended(
-              onPressed: _proceedToEditor,
-              backgroundColor: Colors.purple,
-              icon: const Icon(Icons.arrow_forward),
-              label: Text('Next (${_selectedMedia.length})'),
-            )
-          : null,
     );
   }
 
@@ -266,14 +230,14 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
   Widget _buildMediaGrid() {
     return Column(
       children: [
-        if (_selectedMedia.isNotEmpty)
+        if (_selectionState.selectedMedia.isNotEmpty)
           Container(
             padding: const EdgeInsets.all(16),
             color: const Color(0xFF2A2A2A),
             child: Row(
               children: [
                 Text(
-                  '${_selectedMedia.length} selected',
+                  '${_selectionState.selectedMedia.length} selected',
                   style: const TextStyle(
                     color: Colors.white,
                     fontWeight: FontWeight.bold,
@@ -282,9 +246,7 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
                 const Spacer(),
                 TextButton(
                   onPressed: () {
-                    setState(() {
-                      _selectedMedia.clear();
-                    });
+                    _selectionState.clearSelection();
                   },
                   child: const Text(
                     'Clear All',
@@ -303,13 +265,13 @@ class _MediaPickerScreenState extends State<MediaPickerScreen> {
             itemCount: _mediaList.length,
             itemBuilder: (context, index) {
               final asset = _mediaList[index];
-              final isSelected = _selectedMedia.contains(asset);
+              final isSelected = _selectionState.isSelected(asset);
               
               return MediaItemWidget(
                 asset: asset,
                 isSelected: isSelected,
                 onTap: () => _toggleSelection(asset),
-                selectionIndex: isSelected ? _selectedMedia.indexOf(asset) + 1 : 0,
+                selectionIndex: _selectionState.getSelectionIndex(asset),
               );
             },
           ),

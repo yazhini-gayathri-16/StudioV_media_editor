@@ -24,13 +24,16 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
   bool _isLeftHandleActive = false;
   bool _isRightHandleActive = false;
   double _clipWidth = 120.0;
+  double _minClipWidth = 60.0;
+  double _maxClipWidth = 200.0;
 
   @override
   Widget build(BuildContext context) {
     // Calculate width based on duration (minimum 60px, maximum 200px)
     final durationRatio = widget.clip.trimmedDuration.inMilliseconds / 
                          widget.clip.originalDuration.inMilliseconds;
-    _clipWidth = (60 + (durationRatio * 140)).clamp(60.0, 200.0);
+    _clipWidth = (_minClipWidth + (durationRatio * (_maxClipWidth - _minClipWidth)))
+        .clamp(_minClipWidth, _maxClipWidth);
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -114,7 +117,7 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
               ),
             ),
             
-            // Left trim handle
+            // Left trim handle (only for videos)
             if (widget.clip.asset.type == AssetType.video)
               Positioned(
                 left: 0,
@@ -135,26 +138,33 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
                     });
                   },
                   child: Container(
-                    width: 8,
+                    width: 12,
                     decoration: BoxDecoration(
                       color: _isLeftHandleActive ? Colors.purple : Colors.white,
                       borderRadius: const BorderRadius.only(
                         topLeft: Radius.circular(8),
                         bottomLeft: Radius.circular(8),
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 2,
+                          offset: const Offset(1, 0),
+                        ),
+                      ],
                     ),
-                    child: Center(
-                      child: Container(
-                        width: 2,
-                        height: 20,
+                    child: const Center(
+                      child: Icon(
+                        Icons.drag_handle,
                         color: Colors.black54,
+                        size: 12,
                       ),
                     ),
                   ),
                 ),
               ),
             
-            // Right trim handle
+            // Right trim handle (only for videos)
             if (widget.clip.asset.type == AssetType.video)
               Positioned(
                 right: 0,
@@ -175,19 +185,26 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
                     });
                   },
                   child: Container(
-                    width: 8,
+                    width: 12,
                     decoration: BoxDecoration(
                       color: _isRightHandleActive ? Colors.purple : Colors.white,
                       borderRadius: const BorderRadius.only(
                         topRight: Radius.circular(8),
                         bottomRight: Radius.circular(8),
                       ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 2,
+                          offset: const Offset(-1, 0),
+                        ),
+                      ],
                     ),
-                    child: Center(
-                      child: Container(
-                        width: 2,
-                        height: 20,
+                    child: const Center(
+                      child: Icon(
+                        Icons.drag_handle,
                         color: Colors.black54,
+                        size: 12,
                       ),
                     ),
                   ),
@@ -200,12 +217,14 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
   }
 
   void _handleLeftTrim(double deltaX) {
-    final pixelsPerSecond = _clipWidth / widget.clip.originalDuration.inSeconds;
-    final deltaSeconds = deltaX / pixelsPerSecond;
+    // Calculate the time change based on pixel movement
+    final totalPixels = _maxClipWidth;
+    final totalDuration = widget.clip.originalDuration.inMilliseconds;
+    final millisecondsPerPixel = totalDuration / totalPixels;
     
-    Duration newStartTime = widget.clip.startTime + Duration(
-      milliseconds: (deltaSeconds * 1000).round(),
-    );
+    final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
+    
+    Duration newStartTime = widget.clip.startTime + Duration(milliseconds: deltaMilliseconds);
     
     // Ensure start time doesn't go below 0 or beyond end time
     newStartTime = Duration(
@@ -221,12 +240,14 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
   }
 
   void _handleRightTrim(double deltaX) {
-    final pixelsPerSecond = _clipWidth / widget.clip.originalDuration.inSeconds;
-    final deltaSeconds = deltaX / pixelsPerSecond;
+    // Calculate the time change based on pixel movement
+    final totalPixels = _maxClipWidth;
+    final totalDuration = widget.clip.originalDuration.inMilliseconds;
+    final millisecondsPerPixel = totalDuration / totalPixels;
     
-    Duration newEndTime = widget.clip.endTime + Duration(
-      milliseconds: (deltaSeconds * 1000).round(),
-    );
+    final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
+    
+    Duration newEndTime = widget.clip.endTime + Duration(milliseconds: deltaMilliseconds);
     
     // Ensure end time doesn't go beyond original duration or before start time
     newEndTime = Duration(
