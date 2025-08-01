@@ -4,6 +4,7 @@ import 'package:video_player/video_player.dart';
 import '../models/media_clip.dart';
 import '../widgets/timeline_clip_widget.dart';
 import 'dart:async';
+import '../widgets/enhanced_timeline_widget.dart';
 
 class EditorScreen extends StatefulWidget {
   final List<MediaClip> mediaClips;
@@ -26,7 +27,9 @@ class _EditorScreenState extends State<EditorScreen> {
   Duration _currentProjectPosition = Duration.zero;
   List<MediaClip> _mediaClips = [];
   Timer? _imageTimer;
-  bool _isTransitioning = false;
+  Timer? _positionTimer;
+  bool _isInitializing = false;
+  StreamSubscription? _videoSubscription;
 
   @override
   void initState() {
@@ -34,14 +37,71 @@ class _EditorScreenState extends State<EditorScreen> {
     _mediaClips = List.from(widget.mediaClips);
     _calculateTotalDuration();
     _initializeCurrentMedia();
+    _startPositionTimer();
   }
 
   @override
   void dispose() {
     _videoController?.dispose();
     _imageTimer?.cancel();
+    _positionTimer?.cancel();
+    _videoSubscription?.cancel();
     super.dispose();
   }
+
+  void _startPositionTimer() {
+    _positionTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (mounted && _isPlaying) {
+        _updateProjectPosition();
+      }
+    });
+  }
+
+    void _updateProjectPosition() {
+    if (_currentClipIndex >= _mediaClips.length) return;
+    
+    final currentClip = _mediaClips[_currentClipIndex];
+    Duration newPosition = Duration.zero;
+    
+    // Add duration of all previous clips
+    for (int i = 0; i < _currentClipIndex; i++) {
+      newPosition += _mediaClips[i].trimmedDuration;
+    }
+    
+    // Add current position within the current clip
+    if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
+      final videoPosition = _videoController!.value.position;
+      // Fix for first clamp error
+      final clipProgressMs = (videoPosition - currentClip.startTime)
+          .inMilliseconds
+          .clamp(0, currentClip.trimmedDuration.inMilliseconds);
+      newPosition += Duration(milliseconds: clipProgressMs);
+      
+      // Check if we need to move to next clip
+      if (videoPosition >= currentClip.endTime && !_isInitializing) {
+        _moveToNextClip();
+        return;
+      }
+    } else if (currentClip.asset.type == AssetType.image) {
+      // For images, calculate based on how long it's been playing
+      final elapsed = DateTime.now().millisecondsSinceEpoch - _imageStartTime;
+      // Fix for second clamp error
+      final imageProgressMs = elapsed.clamp(0, currentClip.trimmedDuration.inMilliseconds);
+      newPosition += Duration(milliseconds: imageProgressMs);
+      
+      // Check if image duration is complete
+      if (Duration(milliseconds: imageProgressMs) >= currentClip.trimmedDuration && !_isInitializing) {
+        _moveToNextClip();
+        return;
+      }
+    }
+    
+    setState(() {
+      _currentProjectPosition = newPosition;
+    });
+  }
+
+  int _imageStartTime = 0;
 
   void _calculateTotalDuration() {
     _totalProjectDuration = _mediaClips.fold(
@@ -51,14 +111,21 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _initializeCurrentMedia() async {
-    if (_currentClipIndex >= _mediaClips.length) return;
+    if (_currentClipIndex >= _mediaClips.length || _isInitializing) return;
     
+    _isInitializing = true;
     final currentClip = _mediaClips[_currentClipIndex];
     
-    if (currentClip.asset.type == AssetType.video) {
-      await _initializeVideo(currentClip);
-    } else {
-      await _initializeImage(currentClip);
+    try {
+      if (currentClip.asset.type == AssetType.video) {
+        await _initializeVideo(currentClip);
+      } else {
+        await _initializeImage(currentClip);
+      }
+    } catch (e) {
+      print('Error initializing media: $e');
+    } finally {
+      _isInitializing = false;
     }
   }
 
@@ -66,89 +133,49 @@ class _EditorScreenState extends State<EditorScreen> {
     try {
       final file = await clip.asset.file;
       if (file != null) {
-        _videoController?.dispose();
-        _videoController = VideoPlayerController.file(file);
+        // Dispose previous controller
+        await _videoController?.dispose();
+        _videoSubscription?.cancel();
         
+        _videoController = VideoPlayerController.file(file);
         await _videoController!.initialize();
         
         // Seek to the start time of the clip
         await _videoController!.seekTo(clip.startTime);
         
-        _videoController!.addListener(_videoListener);
-
         setState(() {
           _isVideoInitialized = true;
-          _isPlaying = false;
         });
+        
+        // If we were playing, continue playing the new video
+        if (_isPlaying) {
+          await _videoController!.play();
+        }
       }
     } catch (e) {
       print('Error initializing video: $e');
+      setState(() {
+        _isVideoInitialized = false;
+      });
     }
   }
 
   Future<void> _initializeImage(MediaClip clip) async {
-    _videoController?.dispose();
+    // Dispose video controller for images
+    await _videoController?.dispose();
     _videoController = null;
-    _imageTimer?.cancel();
+    _videoSubscription?.cancel();
     
     setState(() {
       _isVideoInitialized = false;
-      _isPlaying = false;
-    });
-  }
-
-  void _videoListener() {
-    if (!mounted || _videoController == null || _isTransitioning) return;
-    
-    final currentClip = _mediaClips[_currentClipIndex];
-    final position = _videoController!.value.position;
-    
-    setState(() {
-      _currentProjectPosition = _getProjectPosition(position);
     });
     
-    // Check if we've reached the end of the current clip (with trimming)
-    if (position >= currentClip.endTime) {
-      _playNextClip();
-    }
+    // Set image start time for duration tracking
+    _imageStartTime = DateTime.now().millisecondsSinceEpoch;
   }
 
-    Duration _getProjectPosition(Duration currentClipPosition) {
-    Duration projectPosition = Duration.zero;
-    
-    // Add duration of all previous clips
-    for (int i = 0; i < _currentClipIndex; i++) {
-      projectPosition += _mediaClips[i].trimmedDuration;
-    }
-    
-    // Add current position within the current clip
-    final currentClip = _mediaClips[_currentClipIndex];
-    if (currentClip.asset.type == AssetType.video) {
-      // Convert to milliseconds, clamp, then convert back to Duration
-      final clipProgressMs = (currentClipPosition - currentClip.startTime)
-          .inMilliseconds
-          .clamp(0, currentClip.trimmedDuration.inMilliseconds);
-      projectPosition += Duration(milliseconds: clipProgressMs);
-    } else {
-      // For images, calculate based on elapsed time
-      projectPosition += _currentProjectPosition - _getPreviousClipsDuration();
-    }
-    
-    return projectPosition;
-  }
-
-  Duration _getPreviousClipsDuration() {
-    Duration duration = Duration.zero;
-    for (int i = 0; i < _currentClipIndex; i++) {
-      duration += _mediaClips[i].trimmedDuration;
-    }
-    return duration;
-  }
-
-  void _playNextClip() async {
-    if (_isTransitioning) return;
-    
-    _isTransitioning = true;
+  Future<void> _moveToNextClip() async {
+    if (_isInitializing) return;
     
     if (_currentClipIndex < _mediaClips.length - 1) {
       setState(() {
@@ -156,54 +183,40 @@ class _EditorScreenState extends State<EditorScreen> {
       });
       
       await _initializeCurrentMedia();
-      
-      if (_isPlaying) {
-        // Auto-play the next clip after a short delay
-        Future.delayed(const Duration(milliseconds: 200), () {
-          if (mounted) {
-            _isTransitioning = false;
-            _togglePlayPause();
-          }
-        });
-      } else {
-        _isTransitioning = false;
-      }
     } else {
-      // End of all clips
+      // End of all clips - stop playback
       setState(() {
         _isPlaying = false;
-        _isTransitioning = false;
       });
+      
+      if (_videoController != null) {
+        await _videoController!.pause();
+      }
     }
   }
 
-  void _togglePlayPause() {
+  Future<void> _togglePlayPause() async {
+    if (_isInitializing) return;
+    
     final currentClip = _mediaClips[_currentClipIndex];
     
     if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
       setState(() {
-        if (_isPlaying) {
-          _videoController!.pause();
-          _isPlaying = false;
-        } else {
-          _videoController!.play();
-          _isPlaying = true;
-        }
+        _isPlaying = !_isPlaying;
       });
+      
+      if (_isPlaying) {
+        await _videoController!.play();
+      } else {
+        await _videoController!.pause();
+      }
     } else if (currentClip.asset.type == AssetType.image) {
       setState(() {
         _isPlaying = !_isPlaying;
       });
       
       if (_isPlaying) {
-        _imageTimer?.cancel();
-        _imageTimer = Timer(currentClip.trimmedDuration, () {
-          if (mounted && _isPlaying) {
-            _playNextClip();
-          }
-        });
-      } else {
-        _imageTimer?.cancel();
+        _imageStartTime = DateTime.now().millisecondsSinceEpoch;
       }
     }
   }
@@ -220,6 +233,35 @@ class _EditorScreenState extends State<EditorScreen> {
     // If we're currently playing the trimmed clip, reinitialize it
     if (clipIndex == _currentClipIndex) {
       _initializeCurrentMedia();
+    }
+  }
+
+  void _jumpToClip(int clipIndex) async {
+    if (clipIndex == _currentClipIndex || _isInitializing) return;
+    
+    final wasPlaying = _isPlaying;
+    
+    // Pause current playback
+    if (_isPlaying) {
+      setState(() {
+        _isPlaying = false;
+      });
+      
+      if (_videoController != null) {
+        await _videoController!.pause();
+      }
+    }
+    
+    // Change to new clip
+    setState(() {
+      _currentClipIndex = clipIndex;
+    });
+    
+    await _initializeCurrentMedia();
+    
+    // Resume playback if it was playing before
+    if (wasPlaying) {
+      await _togglePlayPause();
     }
   }
 
@@ -338,6 +380,18 @@ class _EditorScreenState extends State<EditorScreen> {
                       ),
                     ),
                   ),
+                  // Loading indicator
+                  if (_isInitializing)
+                    Positioned.fill(
+                      child: Container(
+                        color: Colors.black.withOpacity(0.5),
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -491,28 +545,13 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Widget _buildEnhancedTimeline() {
-    return ListView.builder(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      itemCount: _mediaClips.length,
-      itemBuilder: (context, index) {
-        final clip = _mediaClips[index];
-        final isSelected = index == _currentClipIndex;
-        
-        return TimelineClipWidget(
-          clip: clip,
-          isSelected: isSelected,
-          onTap: () {
-            setState(() {
-              _currentClipIndex = index;
-            });
-            _initializeCurrentMedia();
-          },
-          onTrimChanged: (newStartTime, newEndTime) {
-            _onClipTrimmed(index, newStartTime, newEndTime);
-          },
-        );
-      },
+    return EnhancedTimelineWidget(
+      mediaClips: _mediaClips,
+      currentClipIndex: _currentClipIndex,
+      currentProjectPosition: _currentProjectPosition,
+      totalProjectDuration: _totalProjectDuration,
+      onClipTap: _jumpToClip,
+      onTrimChanged: _onClipTrimmed,
     );
   }
 
