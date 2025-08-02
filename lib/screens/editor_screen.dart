@@ -2,9 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 import '../models/media_clip.dart';
-import '../widgets/timeline_clip_widget.dart';
-import 'dart:async';
-import '../widgets/enhanced_timeline_widget.dart';
+import '../widgets/proportional_timeline_widget.dart';
+import '../widgets/timeline_ruler.dart';
+import '../services/video_player_manager.dart';
+import 'dart:async'; // Add this import for Timer and StreamSubscription
+import 'package:flutter/material.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:video_player/video_player.dart';
 
 class EditorScreen extends StatefulWidget {
   final List<MediaClip> mediaClips;
@@ -29,7 +33,10 @@ class _EditorScreenState extends State<EditorScreen> {
   Timer? _imageTimer;
   Timer? _positionTimer;
   bool _isInitializing = false;
-  StreamSubscription? _videoSubscription;
+  StreamSubscription<dynamic>? _videoSubscription; 
+  int _imageStartTime = 0;
+  final ScrollController _timelineScrollController = ScrollController();
+  final VideoPlayerManager _videoManager = VideoPlayerManager();
 
   @override
   void initState() {
@@ -42,22 +49,24 @@ class _EditorScreenState extends State<EditorScreen> {
 
   @override
   void dispose() {
-    _videoController?.dispose();
+    _videoManager.dispose();
     _imageTimer?.cancel();
     _positionTimer?.cancel();
     _videoSubscription?.cancel();
+    _timelineScrollController.dispose();
     super.dispose();
   }
 
   void _startPositionTimer() {
-    _positionTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+    _positionTimer?.cancel(); // Cancel any existing timer
+    _positionTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
       if (mounted && _isPlaying) {
         _updateProjectPosition();
       }
     });
   }
 
-    void _updateProjectPosition() {
+  void _updateProjectPosition() {
     if (_currentClipIndex >= _mediaClips.length) return;
     
     final currentClip = _mediaClips[_currentClipIndex];
@@ -71,7 +80,6 @@ class _EditorScreenState extends State<EditorScreen> {
     // Add current position within the current clip
     if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
       final videoPosition = _videoController!.value.position;
-      // Fix for first clamp error
       final clipProgressMs = (videoPosition - currentClip.startTime)
           .inMilliseconds
           .clamp(0, currentClip.trimmedDuration.inMilliseconds);
@@ -85,7 +93,6 @@ class _EditorScreenState extends State<EditorScreen> {
     } else if (currentClip.asset.type == AssetType.image) {
       // For images, calculate based on how long it's been playing
       final elapsed = DateTime.now().millisecondsSinceEpoch - _imageStartTime;
-      // Fix for second clamp error
       final imageProgressMs = elapsed.clamp(0, currentClip.trimmedDuration.inMilliseconds);
       newPosition += Duration(milliseconds: imageProgressMs);
       
@@ -100,8 +107,6 @@ class _EditorScreenState extends State<EditorScreen> {
       _currentProjectPosition = newPosition;
     });
   }
-
-  int _imageStartTime = 0;
 
   void _calculateTotalDuration() {
     _totalProjectDuration = _mediaClips.fold(
@@ -129,36 +134,35 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
-  Future<void> _initializeVideo(MediaClip clip) async {
-    try {
-      final file = await clip.asset.file;
-      if (file != null) {
-        // Dispose previous controller
-        await _videoController?.dispose();
-        _videoSubscription?.cancel();
-        
-        _videoController = VideoPlayerController.file(file);
-        await _videoController!.initialize();
-        
-        // Seek to the start time of the clip
-        await _videoController!.seekTo(clip.startTime);
-        
-        setState(() {
-          _isVideoInitialized = true;
-        });
-        
-        // If we were playing, continue playing the new video
-        if (_isPlaying) {
-          await _videoController!.play();
-        }
-      }
-    } catch (e) {
-      print('Error initializing video: $e');
+Future<void> _initializeVideo(MediaClip clip) async {
+  try {
+    setState(() {
+      _isVideoInitialized = false;
+    });
+
+    final controller = await _videoManager.getController(clip);
+    if (controller != null) {
+      _videoController = controller;
+      
+      // Seek to the start time of the clip
+      await _videoController!.seekTo(clip.startTime);
+      
       setState(() {
-        _isVideoInitialized = false;
+        _isVideoInitialized = true;
       });
+      
+      // If we were playing, continue playing the new video
+      if (_isPlaying) {
+        await _videoController!.play();
+      }
     }
+  } catch (e) {
+    print('Error initializing video: $e');
+    setState(() {
+      _isVideoInitialized = false;
+    });
   }
+}
 
   Future<void> _initializeImage(MediaClip clip) async {
     // Dispose video controller for images
@@ -440,16 +444,16 @@ class _EditorScreenState extends State<EditorScreen> {
                     Expanded(
                       child: Container(
                         height: 80,
-                        child: _buildEnhancedTimeline(),
+                        child: _buildProportionalTimeline(),
                       ),
                     ),
                   ],
                 ),
-                // Time indicators
+                // Timeline ruler with timestamps
                 Container(
                   height: 40,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: _buildTimeIndicators(),
+                  padding: const EdgeInsets.symmetric(horizontal: 56), // Account for add button
+                  child: _buildTimelineRuler(),
                 ),
               ],
             ),
@@ -544,50 +548,42 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  Widget _buildEnhancedTimeline() {
-    return EnhancedTimelineWidget(
-      mediaClips: _mediaClips,
-      currentClipIndex: _currentClipIndex,
-      currentProjectPosition: _currentProjectPosition,
-      totalProjectDuration: _totalProjectDuration,
-      onClipTap: _jumpToClip,
-      onTrimChanged: _onClipTrimmed,
+  Widget _buildProportionalTimeline() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final timelineWidth = constraints.maxWidth;
+        
+        return SingleChildScrollView(
+          controller: _timelineScrollController,
+          scrollDirection: Axis.horizontal,
+          child: ProportionalTimelineWidget(
+            mediaClips: _mediaClips,
+            currentClipIndex: _currentClipIndex,
+            currentProjectPosition: _currentProjectPosition,
+            totalProjectDuration: _totalProjectDuration,
+            timelineWidth: timelineWidth,
+            onClipTap: _jumpToClip,
+            onTrimChanged: _onClipTrimmed,
+          ),
+        );
+      },
     );
   }
 
-  Widget _buildTimeIndicators() {
-    List<Widget> indicators = [];
-    Duration currentTime = Duration.zero;
-    
-    for (int i = 0; i < _mediaClips.length; i++) {
-      final clip = _mediaClips[i];
-      
-      indicators.add(
-        Positioned(
-          left: (currentTime.inMilliseconds / _totalProjectDuration.inMilliseconds) * 
-                (MediaQuery.of(context).size.width - 80),
-          child: Text(
-            _formatDuration(currentTime),
-            style: const TextStyle(color: Colors.white, fontSize: 10),
+  Widget _buildTimelineRuler() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          controller: _timelineScrollController,
+          scrollDirection: Axis.horizontal,
+          child: TimelineRuler(
+            totalDuration: _totalProjectDuration,
+            timelineWidth: constraints.maxWidth,
+            scrollController: _timelineScrollController,
           ),
-        ),
-      );
-      
-      currentTime += clip.trimmedDuration;
-    }
-    
-    // Add final time indicator
-    indicators.add(
-      Positioned(
-        right: 0,
-        child: Text(
-          _formatDuration(_totalProjectDuration),
-          style: const TextStyle(color: Colors.white, fontSize: 10),
-        ),
-      ),
+        );
+      },
     );
-    
-    return Stack(children: indicators);
   }
 
   void _showExportDialog() {

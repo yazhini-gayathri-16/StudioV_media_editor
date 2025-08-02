@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
-import 'media_picker_screen.dart';
+import 'optimized_media_picker_screen.dart'; // Updated import
 import '../models/shared_selection_state.dart';
 import '../models/media_clip.dart';
 import 'editor_screen.dart';
@@ -117,11 +117,11 @@ class _MediaTypeSelectionScreenState extends State<MediaTypeSelectionScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          MediaPickerScreen(
+          OptimizedMediaPickerScreen( // Updated usage
             mediaType: 'video',
             allowMixedSelection: true,
           ),
-          MediaPickerScreen(
+          OptimizedMediaPickerScreen( // Updated usage
             mediaType: 'image',
             allowMixedSelection: true,
           ),
