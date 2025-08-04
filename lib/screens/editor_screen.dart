@@ -22,14 +22,19 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
   Duration _totalProjectDuration = Duration.zero;
-  
-  // --- MODIFICATION: Replaced direct Duration state with a ValueNotifier ---
-  final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(Duration.zero);
-  
+
+  final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(
+    Duration.zero,
+  );
+
   List<MediaClip> _mediaClips = [];
   Timer? _imageTimer;
   Timer? _positionTimer;
-  bool _isInitializing = false;
+
+  // --- FIX: Add missing variable declarations ---
+  bool _isInitializingVideo = false; // Only for video initialization
+  bool _isTransitioning = false; // For clip transitions
+
   StreamSubscription<dynamic>? _videoSubscription;
   int _imageStartTime = 0;
   final ScrollController _timelineScrollController = ScrollController();
@@ -46,7 +51,6 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _preloadInitialVideos() async {
-    // Preload the next 3 videos
     for (int i = 1; i <= 3; i++) {
       if (_currentClipIndex + i < _mediaClips.length) {
         final clip = _mediaClips[_currentClipIndex + i];
@@ -64,15 +68,12 @@ class _EditorScreenState extends State<EditorScreen> {
     _positionTimer?.cancel();
     _videoSubscription?.cancel();
     _timelineScrollController.dispose();
-    
-    // --- MODIFICATION: Dispose the notifier ---
     _projectPositionNotifier.dispose();
-    
     super.dispose();
   }
 
   void _startPositionTimer() {
-    _positionTimer?.cancel(); // Cancel any existing timer
+    _positionTimer?.cancel();
     _positionTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
       if (mounted && _isPlaying) {
         _updateProjectPosition();
@@ -86,38 +87,41 @@ class _EditorScreenState extends State<EditorScreen> {
     final currentClip = _mediaClips[_currentClipIndex];
     Duration newPosition = Duration.zero;
 
-    // Add duration of all previous clips
     for (int i = 0; i < _currentClipIndex; i++) {
       newPosition += _mediaClips[i].trimmedDuration;
     }
 
-    // Add current position within the current clip
-    if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
+    if (currentClip.asset.type == AssetType.video &&
+        _videoController != null &&
+        _isVideoInitialized) {
       final videoPosition = _videoController!.value.position;
       final clipProgressMs = (videoPosition - currentClip.startTime)
           .inMilliseconds
           .clamp(0, currentClip.trimmedDuration.inMilliseconds);
       newPosition += Duration(milliseconds: clipProgressMs);
 
-      // Check if we need to move to next clip
-      if (videoPosition >= currentClip.endTime && !_isInitializing) {
+      // --- FIX: Only auto-advance if not transitioning ---
+      if (videoPosition >= currentClip.endTime && !_isTransitioning) {
         _moveToNextClip();
         return;
       }
     } else if (currentClip.asset.type == AssetType.image) {
-      // For images, calculate based on how long it's been playing
       final elapsed = DateTime.now().millisecondsSinceEpoch - _imageStartTime;
-      final imageProgressMs = elapsed.clamp(0, currentClip.trimmedDuration.inMilliseconds);
+      final imageProgressMs = elapsed.clamp(
+        0,
+        currentClip.trimmedDuration.inMilliseconds,
+      );
       newPosition += Duration(milliseconds: imageProgressMs);
 
-      // Check if image duration is complete
-      if (Duration(milliseconds: imageProgressMs) >= currentClip.trimmedDuration && !_isInitializing) {
+      // --- FIX: Only auto-advance if not transitioning ---
+      if (Duration(milliseconds: imageProgressMs) >=
+              currentClip.trimmedDuration &&
+          !_isTransitioning) {
         _moveToNextClip();
         return;
       }
     }
-    
-    // --- MODIFICATION: Update notifier instead of calling setState ---
+
     _projectPositionNotifier.value = newPosition;
   }
 
@@ -129,16 +133,19 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Future<void> _initializeCurrentMedia() async {
-    if (_currentClipIndex >= _mediaClips.length || _isInitializing) return;
+    if (_currentClipIndex >= _mediaClips.length || _isTransitioning) return;
 
-    _isInitializing = true;
+    // --- FIX: Set transitioning state instead of general initializing ---
+    setState(() {
+      _isTransitioning = true;
+    });
+
     final currentClip = _mediaClips[_currentClipIndex];
 
     try {
       if (currentClip.asset.type == AssetType.video) {
         await _initializeVideo(currentClip);
 
-        // Preload the next video
         if (_currentClipIndex < _mediaClips.length - 1) {
           final nextClip = _mediaClips[_currentClipIndex + 1];
           if (nextClip.asset.type == AssetType.video) {
@@ -151,23 +158,29 @@ class _EditorScreenState extends State<EditorScreen> {
     } catch (e) {
       print('Error initializing media: $e');
     } finally {
-      if(mounted) {
-        _isInitializing = false;
+      if (mounted) {
+        setState(() {
+          _isTransitioning = false;
+        });
       }
     }
   }
 
   Future<void> _initializeVideo(MediaClip clip) async {
+    setState(() {
+      _isInitializingVideo = true;
+    });
+
     try {
-      // The old controller is now disposed automatically inside getController
       final controller = await _videoManager.getController(clip);
 
       if (mounted) {
         setState(() {
           _videoController = controller;
           _isVideoInitialized = controller != null;
+          _isInitializingVideo = false;
         });
-        
+
         if (_isPlaying && _videoController != null) {
           await _videoController!.seekTo(clip.startTime);
           await _videoController!.play();
@@ -178,36 +191,29 @@ class _EditorScreenState extends State<EditorScreen> {
       if (mounted) {
         setState(() {
           _isVideoInitialized = false;
+          _isInitializingVideo = false;
         });
       }
     }
   }
 
-  Future<void> _preloadNextVideo() async {
-    if (_currentClipIndex + 1 < _mediaClips.length) {
-      final nextClip = _mediaClips[_currentClipIndex + 1];
-      if (nextClip.asset.type == AssetType.video) {
-        await _videoManager.preloadNextVideo(nextClip);
-      }
-    }
-  }
-
   Future<void> _initializeImage(MediaClip clip) async {
-    // Tell the manager to dispose of the last active video controller
-    await _videoManager.getController(clip); // Passing a non-video clip will trigger disposal of the previous video controller
+    // This call triggers the disposal logic in the manager for the previous video controller.
+    await _videoManager.getController(clip);
 
-    if(mounted) {
+    if (mounted) {
       setState(() {
         _videoController = null;
         _isVideoInitialized = false;
+        _isInitializingVideo = false;
       });
     }
 
     _imageStartTime = DateTime.now().millisecondsSinceEpoch;
-}
-  
+  }
+
   Future<void> _moveToNextClip() async {
-    if (_isInitializing) return;
+    if (_isTransitioning) return;
 
     if (_currentClipIndex < _mediaClips.length - 1) {
       setState(() {
@@ -222,30 +228,41 @@ class _EditorScreenState extends State<EditorScreen> {
 
       if (_videoController != null) {
         await _videoController!.pause();
-        await _videoController!.seekTo(_mediaClips[_currentClipIndex].startTime);
+        await _videoController!.seekTo(
+          _mediaClips[_currentClipIndex].startTime,
+        );
       }
       _projectPositionNotifier.value = _totalProjectDuration;
     }
   }
-  
+
+  // --- FIX: Improved toggle play/pause logic ---
   Future<void> _togglePlayPause() async {
-    if (_isInitializing) return;
+    // --- FIX: Allow play/pause even during video initialization ---
+    // Only block if we're transitioning between clips
+    if (_isTransitioning) return;
 
     final currentClip = _mediaClips[_currentClipIndex];
 
     setState(() {
-        _isPlaying = !_isPlaying;
+      _isPlaying = !_isPlaying;
     });
 
-    if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
-      if (_isPlaying) {
-        // If playback ended, restart from the current clip's beginning
-        if (_videoController!.value.position >= currentClip.endTime) {
+    if (currentClip.asset.type == AssetType.video) {
+      // --- FIX: Handle video play/pause even if controller is initializing ---
+      if (_videoController != null && _isVideoInitialized) {
+        if (_isPlaying) {
+          if (_videoController!.value.position >= currentClip.endTime) {
             await _videoController!.seekTo(currentClip.startTime);
+          }
+          await _videoController!.play();
+        } else {
+          await _videoController!.pause();
         }
-        await _videoController!.play();
-      } else {
-        await _videoController!.pause();
+      } else if (_isInitializingVideo && _isPlaying) {
+        // --- FIX: If video is still initializing but user wants to play,
+        // wait for initialization to complete then play
+        _waitForVideoAndPlay(currentClip);
       }
     } else if (currentClip.asset.type == AssetType.image) {
       if (_isPlaying) {
@@ -254,7 +271,30 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
-  void _onClipTrimmed(int clipIndex, Duration newStartTime, Duration newEndTime) {
+  // --- FIX: Helper method to wait for video initialization ---
+  Future<void> _waitForVideoAndPlay(MediaClip clip) async {
+    int attempts = 0;
+    const maxAttempts = 50; // 2.5 seconds max wait
+
+    while (_isInitializingVideo && attempts < maxAttempts && _isPlaying) {
+      await Future.delayed(const Duration(milliseconds: 50));
+      attempts++;
+    }
+
+    if (_videoController != null &&
+        _isVideoInitialized &&
+        _isPlaying &&
+        mounted) {
+      await _videoController!.seekTo(clip.startTime);
+      await _videoController!.play();
+    }
+  }
+
+  void _onClipTrimmed(
+    int clipIndex,
+    Duration newStartTime,
+    Duration newEndTime,
+  ) {
     setState(() {
       _mediaClips[clipIndex] = _mediaClips[clipIndex].copyWith(
         startTime: newStartTime,
@@ -262,14 +302,14 @@ class _EditorScreenState extends State<EditorScreen> {
       );
     });
     _calculateTotalDuration();
-    
+
     if (clipIndex == _currentClipIndex) {
       _initializeCurrentMedia();
     }
   }
 
   void _jumpToClip(int clipIndex) async {
-    if (clipIndex == _currentClipIndex || _isInitializing) return;
+    if (clipIndex == _currentClipIndex || _isTransitioning) return;
 
     final wasPlaying = _isPlaying;
 
@@ -288,7 +328,7 @@ class _EditorScreenState extends State<EditorScreen> {
     });
 
     await _initializeCurrentMedia();
-    
+
     _updateProjectPosition();
 
     if (wasPlaying) {
@@ -354,9 +394,8 @@ class _EditorScreenState extends State<EditorScreen> {
               color: Colors.black,
               child: Stack(
                 children: [
-                  Center(
-                    child: _buildPreview(),
-                  ),
+                  Center(child: _buildPreview()),
+                  // --- FIX: Touch area is always active, only visual feedback changes ---
                   Positioned.fill(
                     child: GestureDetector(
                       onTap: _togglePlayPause,
@@ -390,7 +429,10 @@ class _EditorScreenState extends State<EditorScreen> {
                     left: 20,
                     right: 20,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.black.withOpacity(0.7),
                         borderRadius: BorderRadius.circular(20),
@@ -398,31 +440,48 @@ class _EditorScreenState extends State<EditorScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          // --- MODIFICATION: Wrap Text with ValueListenableBuilder ---
                           ValueListenableBuilder<Duration>(
                             valueListenable: _projectPositionNotifier,
                             builder: (context, position, child) {
                               return Text(
                                 _formatDuration(position),
-                                style: const TextStyle(color: Colors.white, fontSize: 14),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 14,
+                                ),
                               );
                             },
                           ),
                           Text(
                             _formatDuration(_totalProjectDuration),
-                            style: const TextStyle(color: Colors.white, fontSize: 14),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
-                  if (_isInitializing)
-                    Positioned.fill(
+                  // --- FIX: Show loading only for video initialization, not clip transitions ---
+                  if (_isInitializingVideo)
+                    Positioned(
+                      top: 20,
+                      right: 20,
                       child: Container(
-                        color: Colors.black.withOpacity(0.5),
-                        child: const Center(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: const SizedBox(
+                          width: 20,
+                          height: 20,
                           child: CircularProgressIndicator(
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              Colors.purple,
+                            ),
                           ),
                         ),
                       ),
@@ -431,7 +490,7 @@ class _EditorScreenState extends State<EditorScreen> {
               ),
             ),
           ),
-          
+
           // Editing Tools
           Container(
             height: 100,
@@ -449,7 +508,7 @@ class _EditorScreenState extends State<EditorScreen> {
               ],
             ),
           ),
-          
+
           // Timeline Section
           Container(
             height: 140,
@@ -492,12 +551,17 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Widget _buildPreview() {
     if (_mediaClips.isEmpty || _currentClipIndex >= _mediaClips.length) {
-      return const Text('No media selected', style: TextStyle(color: Colors.white));
+      return const Text(
+        'No media selected',
+        style: TextStyle(color: Colors.white),
+      );
     }
 
     final currentClip = _mediaClips[_currentClipIndex];
-    
-    if (currentClip.asset.type == AssetType.video && _isVideoInitialized && _videoController != null) {
+
+    if (currentClip.asset.type == AssetType.video &&
+        _isVideoInitialized &&
+        _videoController != null) {
       return AspectRatio(
         aspectRatio: _videoController!.value.aspectRatio,
         child: VideoPlayer(_videoController!),
@@ -521,16 +585,16 @@ class _EditorScreenState extends State<EditorScreen> {
     try {
       final file = await asset.file;
       if (file != null) {
-        return Image.file(
-          file,
-          fit: BoxFit.contain,
-        );
+        return Image.file(file, fit: BoxFit.contain);
       }
     } catch (e) {
       print('Error loading image preview: $e');
     }
-    
-    return const Text('Error loading preview', style: TextStyle(color: Colors.white));
+
+    return const Text(
+      'Error loading preview',
+      style: TextStyle(color: Colors.white),
+    );
   }
 
   Widget _buildToolButton(IconData icon, String label, bool hasNotification) {
@@ -564,35 +628,26 @@ class _EditorScreenState extends State<EditorScreen> {
           ],
         ),
         const SizedBox(height: 4),
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 10,
-          ),
-        ),
+        Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
       ],
     );
   }
 
-  // --- MODIFICATION: This entire method is updated ---
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
         final timelineWidth = constraints.maxWidth;
-        
+
         return SingleChildScrollView(
           controller: _timelineScrollController,
           scrollDirection: Axis.horizontal,
-          // ValueListenableBuilder is added here to only rebuild the timeline
-          // when the position notifier changes.
           child: ValueListenableBuilder<Duration>(
             valueListenable: _projectPositionNotifier,
             builder: (context, position, child) {
               return ProportionalTimelineWidget(
                 mediaClips: _mediaClips,
                 currentClipIndex: _currentClipIndex,
-                currentProjectPosition: position, // Use the updated position
+                currentProjectPosition: position,
                 totalProjectDuration: _totalProjectDuration,
                 timelineWidth: timelineWidth,
                 onClipTap: _jumpToClip,
@@ -627,7 +682,10 @@ class _EditorScreenState extends State<EditorScreen> {
       builder: (BuildContext context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('Export Project', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Export Project',
+            style: TextStyle(color: Colors.white),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -652,7 +710,10 @@ class _EditorScreenState extends State<EditorScreen> {
                 Navigator.pop(context);
                 // Implement export logic
               },
-              child: const Text('Export', style: TextStyle(color: Colors.purple)),
+              child: const Text(
+                'Export',
+                style: TextStyle(color: Colors.purple),
+              ),
             ),
           ],
         );
