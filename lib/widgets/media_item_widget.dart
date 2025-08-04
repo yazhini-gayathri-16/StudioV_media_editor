@@ -8,12 +8,12 @@ class MediaItemWidget extends StatelessWidget {
   final int selectionIndex;
 
   const MediaItemWidget({
-    Key? key,
+    super.key,
     required this.asset,
     required this.isSelected,
     required this.onTap,
     required this.selectionIndex,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

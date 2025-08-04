@@ -9,12 +9,12 @@ class OptimizedMediaItemWidget extends StatefulWidget {
   final int selectionIndex;
 
   const OptimizedMediaItemWidget({
-    Key? key,
+    super.key,
     required this.asset,
     required this.isSelected,
     required this.onTap,
     required this.selectionIndex,
-  }) : super(key: key);
+  });
 
   @override
   State<OptimizedMediaItemWidget> createState() => _OptimizedMediaItemWidgetState();

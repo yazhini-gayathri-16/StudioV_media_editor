@@ -10,10 +10,10 @@ class MediaPickerScreen extends StatefulWidget {
   final bool allowMixedSelection;
 
   const MediaPickerScreen({
-    Key? key, 
+    super.key, 
     required this.mediaType,
     this.allowMixedSelection = false,
-  }) : super(key: key);
+  });
 
   @override
   State<MediaPickerScreen> createState() => _MediaPickerScreenState();

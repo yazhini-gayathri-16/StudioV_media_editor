@@ -12,14 +12,14 @@ class EnhancedTimelineWidget extends StatelessWidget {
   final Function(int, Duration, Duration) onTrimChanged;
 
   const EnhancedTimelineWidget({
-    Key? key,
+    super.key,
     required this.mediaClips,
     required this.currentClipIndex,
     required this.currentProjectPosition,
     required this.totalProjectDuration,
     required this.onClipTap,
     required this.onTrimChanged,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

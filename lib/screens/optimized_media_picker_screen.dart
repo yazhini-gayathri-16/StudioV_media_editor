@@ -11,17 +11,17 @@ class OptimizedMediaPickerScreen extends StatefulWidget {
   final bool allowMixedSelection;
 
   const OptimizedMediaPickerScreen({
-    Key? key, 
+    super.key, 
     required this.mediaType,
     this.allowMixedSelection = false,
-  }) : super(key: key);
+  });
 
   @override
   State<OptimizedMediaPickerScreen> createState() => _OptimizedMediaPickerScreenState();
 }
 
 class _OptimizedMediaPickerScreenState extends State<OptimizedMediaPickerScreen> {
-  List<AssetEntity> _mediaList = [];
+  final List<AssetEntity> _mediaList = [];
   bool _isLoading = true;
   bool _hasPermission = false;
   bool _isLoadingMore = false;

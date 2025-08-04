@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../models/media_clip.dart';
+// Added import for the cache manager
+import '../services/media_cache_manager.dart';
 
 class ProportionalTimelineWidget extends StatelessWidget {
   final List<MediaClip> mediaClips;
@@ -12,7 +14,7 @@ class ProportionalTimelineWidget extends StatelessWidget {
   final double timelineWidth;
 
   const ProportionalTimelineWidget({
-    Key? key,
+    super.key,
     required this.mediaClips,
     required this.currentClipIndex,
     required this.currentProjectPosition,
@@ -20,7 +22,7 @@ class ProportionalTimelineWidget extends StatelessWidget {
     required this.onClipTap,
     required this.onTrimChanged,
     required this.timelineWidth,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -124,13 +126,13 @@ class ProportionalClipWidget extends StatefulWidget {
   final Function(Duration startTime, Duration endTime) onTrimChanged;
 
   const ProportionalClipWidget({
-    Key? key,
+    super.key,
     required this.clip,
     required this.isSelected,
     required this.width,
     required this.onTap,
     required this.onTrimChanged,
-  }) : super(key: key);
+  });
 
   @override
   State<ProportionalClipWidget> createState() => _ProportionalClipWidgetState();
@@ -139,6 +141,67 @@ class ProportionalClipWidget extends StatefulWidget {
 class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
   bool _isLeftHandleActive = false;
   bool _isRightHandleActive = false;
+
+  // --- MODIFICATION START ---
+  // State variables for optimized thumbnail loading and caching.
+  final MediaCacheManager _cacheManager = MediaCacheManager();
+  Widget? _thumbnailWidget;
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadThumbnail();
+  }
+
+  /// Loads the thumbnail, checking the cache first to avoid redundant work.
+  Future<void> _loadThumbnail() async {
+    final cacheKey = '${widget.clip.asset.id}_proportional_thumb_${widget.width.round()}';
+
+    // 1. Check if the widget is already cached
+    final cachedWidget = _cacheManager.getCachedWidget(cacheKey);
+    if (cachedWidget != null) {
+      if (mounted) {
+        setState(() {
+          _thumbnailWidget = cachedWidget;
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+
+    // 2. If not cached, fetch thumbnail data
+    try {
+      final thumbnailBytes = await widget.clip.asset.thumbnailDataWithSize(
+        ThumbnailSize(widget.width.round(), 60),
+      );
+
+      if (thumbnailBytes != null && mounted) {
+        final imageWidget = Image.memory(
+          thumbnailBytes,
+          fit: BoxFit.cover,
+          width: widget.width,
+          height: 60,
+          gaplessPlayback: true, // Prevents flicker on image update
+        );
+
+        // 3. Cache the fully prepared widget for future use
+        _cacheManager.setCachedWidget(cacheKey, imageWidget);
+        
+        setState(() {
+          _thumbnailWidget = imageWidget;
+          _isLoading = false;
+        });
+      } else if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    } catch (e) {
+      print('Error loading timeline thumbnail: $e');
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+  // --- MODIFICATION END ---
+
 
   @override
   Widget build(BuildContext context) {
@@ -161,25 +224,34 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: Stack(
+                  fit: StackFit.expand,
                   children: [
-                    // Thumbnail
-                    FutureBuilder<Widget>(
-                      future: _buildThumbnail(),
-                      builder: (context, snapshot) {
-                        if (snapshot.hasData) {
-                          return snapshot.data!;
-                        }
-                        return Container(
-                          color: Colors.grey[800],
-                          child: const Center(
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
-                            ),
+                    // --- MODIFICATION START ---
+                    // Replaced FutureBuilder with a more performant state-based builder.
+                    if (_isLoading)
+                      Container(
+                        color: Colors.grey[800],
+                        child: const Center(
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
                           ),
-                        );
-                      },
-                    ),
+                        ),
+                      )
+                    else if (_thumbnailWidget != null)
+                      _thumbnailWidget!
+                    else
+                      // Fallback view if thumbnail fails to load
+                      Container(
+                        color: Colors.grey[800],
+                        child: Icon(
+                          widget.clip.asset.type == AssetType.video ? Icons.videocam : Icons.photo,
+                          color: Colors.white.withOpacity(0.5),
+                          size: 20,
+                        ),
+                      ),
+                    // --- MODIFICATION END ---
+                    
                     // Duration overlay
                     Positioned(
                       bottom: 2,
@@ -312,6 +384,8 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
   void _handleLeftTrim(double deltaX) {
     // Calculate the time change based on pixel movement relative to clip width
     final totalDuration = widget.clip.originalDuration.inMilliseconds;
+    // Avoid division by zero if width is somehow zero
+    if (widget.width == 0) return;
     final millisecondsPerPixel = totalDuration / widget.width;
     
     final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
@@ -334,6 +408,8 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
   void _handleRightTrim(double deltaX) {
     // Calculate the time change based on pixel movement relative to clip width
     final totalDuration = widget.clip.originalDuration.inMilliseconds;
+    // Avoid division by zero if width is somehow zero
+    if (widget.width == 0) return;
     final millisecondsPerPixel = totalDuration / widget.width;
     
     final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
@@ -351,34 +427,6 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
     if (newEndTime != widget.clip.endTime) {
       widget.onTrimChanged(widget.clip.startTime, newEndTime);
     }
-  }
-
-  Future<Widget> _buildThumbnail() async {
-    try {
-      final thumbnail = await widget.clip.asset.thumbnailDataWithSize(
-        ThumbnailSize(widget.width.round(), 60),
-      );
-      
-      if (thumbnail != null) {
-        return Image.memory(
-          thumbnail,
-          fit: BoxFit.cover,
-          width: widget.width,
-          height: 60,
-        );
-      }
-    } catch (e) {
-      print('Error loading thumbnail: $e');
-    }
-    
-    return Container(
-      color: Colors.grey[800],
-      child: Icon(
-        widget.clip.asset.type == AssetType.video ? Icons.videocam : Icons.photo,
-        color: Colors.white,
-        size: 20,
-      ),
-    );
   }
 
   String _formatDuration(Duration duration) {

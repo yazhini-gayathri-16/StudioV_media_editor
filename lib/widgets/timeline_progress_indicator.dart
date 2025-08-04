@@ -6,11 +6,11 @@ class TimelineProgressIndicator extends StatelessWidget {
   final double timelineWidth;
 
   const TimelineProgressIndicator({
-    Key? key,
+    super.key,
     required this.currentPosition,
     required this.totalDuration,
     required this.timelineWidth,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {

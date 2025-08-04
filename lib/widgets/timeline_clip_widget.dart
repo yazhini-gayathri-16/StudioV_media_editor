@@ -9,12 +9,12 @@ class TimelineClipWidget extends StatefulWidget {
   final Function(Duration startTime, Duration endTime) onTrimChanged;
 
   const TimelineClipWidget({
-    Key? key,
+    super.key,
     required this.clip,
     required this.isSelected,
     required this.onTap,
     required this.onTrimChanged,
-  }) : super(key: key);
+  });
 
   @override
   State<TimelineClipWidget> createState() => _TimelineClipWidgetState();
@@ -24,8 +24,8 @@ class _TimelineClipWidgetState extends State<TimelineClipWidget> {
   bool _isLeftHandleActive = false;
   bool _isRightHandleActive = false;
   double _clipWidth = 120.0;
-  double _minClipWidth = 60.0;
-  double _maxClipWidth = 200.0;
+  final double _minClipWidth = 60.0;
+  final double _maxClipWidth = 200.0;
 
   @override
   Widget build(BuildContext context) {

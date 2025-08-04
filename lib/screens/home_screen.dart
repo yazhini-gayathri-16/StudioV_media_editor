@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'media_type_selection_screen.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({Key? key}) : super(key: key);
+  const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -83,7 +83,7 @@ class HomeScreen extends StatelessWidget {
     Color color,
     VoidCallback onPressed,
   ) {
-    return Container(
+    return SizedBox(
       width: MediaQuery.of(context).size.width * 0.8,
       height: 60,
       child: ElevatedButton(

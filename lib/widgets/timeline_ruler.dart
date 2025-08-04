@@ -6,15 +6,15 @@ class TimelineRuler extends StatelessWidget {
   final ScrollController? scrollController;
 
   const TimelineRuler({
-    Key? key,
+    super.key,
     required this.totalDuration,
     required this.timelineWidth,
     this.scrollController,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return SizedBox(
       height: 40,
       width: timelineWidth,
       child: CustomPaint(

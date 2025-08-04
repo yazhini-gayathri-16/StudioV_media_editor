@@ -8,23 +8,48 @@ class VideoPlayerManager {
   factory VideoPlayerManager() => _instance;
   VideoPlayerManager._internal();
 
-  VideoPlayerController? _currentController;
-  final Map<String, File> _fileCache = {};
-  static const int maxFileCacheSize = 10;
+  VideoPlayerController? _activeController;
+  String? _activeControllerId;
 
+  final Map<String, File> _fileCache = {};
+  static const int maxFileCacheSize = 50;
+  
+  // This cache is for preloaded (non-active) controllers
+  final Map<String, VideoPlayerController> _preloadCache = {};
+  static const int maxPreloadCacheSize = 5; // A smaller cache for only what's next
+
+  /// Gets a controller for a clip, making it the new active one.
+  /// This method intelligently disposes of the previously active controller.
   Future<VideoPlayerController?> getController(MediaClip clip) async {
+    // --- FIX: Dispose the PREVIOUS active controller ---
+    // If the new clip is different from the currently active one, dispose the old one.
+    if (_activeController != null && _activeControllerId != clip.asset.id) {
+        // Only dispose it if it's not in the preload cache for reuse.
+        if (!_preloadCache.containsKey(_activeControllerId)) {
+            await _activeController!.dispose();
+        }
+        _activeController = null;
+    }
+    
+    _activeControllerId = clip.asset.id;
+
+    // Check if the requested controller is already preloaded
+    if (_preloadCache.containsKey(clip.asset.id)) {
+      _activeController = _preloadCache.remove(clip.asset.id);
+      return _activeController;
+    }
+
+    // If it's the same as the already active controller, just return it.
+    if (_activeController != null) {
+        return _activeController;
+    }
+
+    // Otherwise, create a new one
     try {
-      // Get file from cache or load it
       final file = await _getCachedFile(clip.asset);
       if (file == null) return null;
 
-      // Dispose previous controller if different clip
-      if (_currentController != null) {
-        await _currentController!.dispose();
-      }
-
-      // Create new controller with optimized settings
-      _currentController = VideoPlayerController.file(
+      _activeController = VideoPlayerController.file(
         file,
         videoPlayerOptions: VideoPlayerOptions(
           mixWithOthers: false,
@@ -32,38 +57,56 @@ class VideoPlayerManager {
         ),
       );
 
-      // Initialize with timeout
-      await _currentController!.initialize().timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          throw Exception('Video initialization timeout');
-        },
-      );
-
-      // Set video quality for better performance
-      await _currentController!.setLooping(false);
-      
-      return _currentController;
+      await _activeController!.initialize();
+      return _activeController;
     } catch (e) {
       print('Error creating video controller: $e');
       return null;
     }
   }
 
-  Future<File?> _getCachedFile(AssetEntity asset) async {
-    final cacheKey = asset.id;
-    
-    if (_fileCache.containsKey(cacheKey)) {
-      return _fileCache[cacheKey];
+  /// Preloads the next video into a separate cache.
+  Future<void> preloadNextVideo(MediaClip clip) async {
+    if (_preloadCache.containsKey(clip.asset.id) || _activeControllerId == clip.asset.id) {
+        return;
     }
 
     try {
+      final file = await _getCachedFile(clip.asset);
+      if (file == null) return;
+
+      final controller = VideoPlayerController.file(
+        file,
+        videoPlayerOptions: VideoPlayerOptions(
+          mixWithOthers: false,
+          allowBackgroundPlayback: false,
+        ),
+      );
+      await controller.initialize();
+      await controller.seekTo(clip.startTime);
+
+      // Manage preload cache size
+      if (_preloadCache.length >= maxPreloadCacheSize) {
+        final oldestKey = _preloadCache.keys.first;
+        await _preloadCache[oldestKey]?.dispose();
+        _preloadCache.remove(oldestKey);
+      }
+      _preloadCache[clip.asset.id] = controller;
+    } catch (e) {
+      print('Error preloading video: $e');
+    }
+  }
+
+  Future<File?> _getCachedFile(AssetEntity asset) async {
+    final cacheKey = asset.id;
+    if (_fileCache.containsKey(cacheKey)) {
+      return _fileCache[cacheKey];
+    }
+    try {
       final file = await asset.file;
       if (file != null) {
-        // Manage cache size
         if (_fileCache.length >= maxFileCacheSize) {
-          final firstKey = _fileCache.keys.first;
-          _fileCache.remove(firstKey);
+          _fileCache.remove(_fileCache.keys.first);
         }
         _fileCache[cacheKey] = file;
         return file;
@@ -71,20 +114,19 @@ class VideoPlayerManager {
     } catch (e) {
       print('Error getting file: $e');
     }
-    
     return null;
   }
-
-  Future<void> preloadVideo(MediaClip clip) async {
-    // Preload video file in background
-    await _getCachedFile(clip.asset);
-  }
+  
+  VideoPlayerController? get currentController => _activeController;
 
   Future<void> dispose() async {
-    await _currentController?.dispose();
-    _currentController = null;
+    for (final controller in _preloadCache.values) {
+      await controller.dispose();
+    }
+    _preloadCache.clear();
+    await _activeController?.dispose();
+    _activeController = null;
+    _activeControllerId = null;
     _fileCache.clear();
   }
-
-  VideoPlayerController? get currentController => _currentController;
 }

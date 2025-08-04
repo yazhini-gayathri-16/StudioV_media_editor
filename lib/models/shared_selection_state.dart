@@ -6,7 +6,7 @@ class SharedSelectionState extends ChangeNotifier {
   factory SharedSelectionState() => _instance;
   SharedSelectionState._internal();
 
-  List<AssetEntity> _selectedMedia = [];
+  final List<AssetEntity> _selectedMedia = [];
   
   List<AssetEntity> get selectedMedia => List.unmodifiable(_selectedMedia);
   

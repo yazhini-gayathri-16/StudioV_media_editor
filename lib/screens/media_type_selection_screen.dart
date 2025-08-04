@@ -8,7 +8,7 @@ import 'editor_screen.dart';
 class MediaTypeSelectionScreen extends StatefulWidget {
   final String primaryType;
 
-  const MediaTypeSelectionScreen({Key? key, required this.primaryType}) : super(key: key);
+  const MediaTypeSelectionScreen({super.key, required this.primaryType});
 
   @override
   State<MediaTypeSelectionScreen> createState() => _MediaTypeSelectionScreenState();
