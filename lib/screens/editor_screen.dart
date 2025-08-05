@@ -22,7 +22,7 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
   Duration _totalProjectDuration = Duration.zero;
-  static const double pixelsPerSecond = 60.0;
+  static const double pixelsPerSecond = 25.0;
 
   final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(Duration.zero);
   List<MediaClip> _mediaClips = [];
@@ -87,7 +87,7 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _updateProjectPosition() {
-    if (_currentClipIndex >= _mediaClips.length) return;
+    if (_currentClipIndex >= _mediaClips.length || !mounted) return;
 
     final currentClip = _mediaClips[_currentClipIndex];
     Duration newPosition = Duration.zero;
@@ -112,7 +112,38 @@ class _EditorScreenState extends State<EditorScreen> {
         _moveToNextClip();
       }
     }
+    
     _projectPositionNotifier.value = newPosition;
+
+    // --- NEW: AUTO-SCROLL LOGIC ---
+    if (_isPlaying && _timelineScrollController.hasClients) {
+      final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
+      final double viewportWidth = _timelineScrollController.position.viewportDimension;
+      final double currentOffset = _timelineScrollController.offset;
+      
+      // Define a "safe zone" in the middle of the screen.
+      // We want the playhead to stay between 40% and 60% of the screen width.
+      final double safeZoneStart = currentOffset + viewportWidth * 0.4;
+      final double safeZoneEnd = currentOffset + viewportWidth * 0.6;
+
+      // If the playhead moves outside the safe zone, animate the scroll view
+      // to bring the playhead back to the center of the screen.
+      if (playheadX < safeZoneStart || playheadX > safeZoneEnd) {
+        final double targetOffset = playheadX - (viewportWidth / 2);
+        
+        // Ensure the target offset is within the valid scroll range
+        final double clampedOffset = targetOffset.clamp(
+          _timelineScrollController.position.minScrollExtent,
+          _timelineScrollController.position.maxScrollExtent,
+        );
+
+        _timelineScrollController.animateTo(
+          clampedOffset,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    }
   }
 
   void _calculateTotalDuration() {
