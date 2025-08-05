@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../models/media_clip.dart';
-// Added import for the cache manager
 import '../services/media_cache_manager.dart';
 
 class ProportionalTimelineWidget extends StatelessWidget {
@@ -12,6 +11,8 @@ class ProportionalTimelineWidget extends StatelessWidget {
   final Function(int) onClipTap;
   final Function(int, Duration, Duration) onTrimChanged;
   final double timelineWidth;
+  // --- NEW: Added pixelsPerSecond ---
+  final double pixelsPerSecond;
 
   const ProportionalTimelineWidget({
     super.key,
@@ -22,6 +23,7 @@ class ProportionalTimelineWidget extends StatelessWidget {
     required this.onClipTap,
     required this.onTrimChanged,
     required this.timelineWidth,
+    required this.pixelsPerSecond, // --- NEW ---
   });
 
   @override
@@ -30,44 +32,42 @@ class ProportionalTimelineWidget extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    return Stack(
-      children: [
-        // Timeline clips
-        Row(
-          children: _buildProportionalClips(),
-        ),
-        // Progress indicator
-        _buildProgressIndicator(),
-      ],
+    return SizedBox(
+      width: timelineWidth, // Set the total width for the Stack
+      height: 80, // Explicit height
+      child: Stack(
+        children: [
+          // Timeline clips
+          Row(
+            children: _buildProportionalClips(),
+          ),
+          // Progress indicator
+          _buildProgressIndicator(),
+        ],
+      ),
     );
   }
 
   List<Widget> _buildProportionalClips() {
-    List<Widget> clips = [];
-    
-    for (int i = 0; i < mediaClips.length; i++) {
-      final clip = mediaClips[i];
-      final isSelected = i == currentClipIndex;
-      
-      // Calculate proportional width based on clip duration
-      final clipDurationRatio = clip.trimmedDuration.inMilliseconds / 
-                               totalProjectDuration.inMilliseconds;
-      final clipWidth = (timelineWidth * clipDurationRatio).clamp(40.0, timelineWidth);
-      
-      clips.add(
-        ProportionalClipWidget(
-          clip: clip,
-          isSelected: isSelected,
-          width: clipWidth,
-          onTap: () => onClipTap(i),
-          onTrimChanged: (newStartTime, newEndTime) {
-            onTrimChanged(i, newStartTime, newEndTime);
-          },
-        ),
+    return mediaClips.map((clip) {
+      final index = mediaClips.indexOf(clip);
+      final isSelected = index == currentClipIndex;
+
+      // --- FIX: Calculate width based on a fixed scale ---
+      final double clipWidth = clip.trimmedDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
+
+      return ProportionalClipWidget(
+        key: ValueKey(clip.asset.id), // Add a key for better performance
+        clip: clip,
+        isSelected: isSelected,
+        width: clipWidth,
+        pixelsPerSecond: pixelsPerSecond, // Pass down the scale
+        onTap: () => onClipTap(index),
+        onTrimChanged: (newStartTime, newEndTime) {
+          onTrimChanged(index, newStartTime, newEndTime);
+        },
       );
-    }
-    
-    return clips;
+    }).toList();
   }
 
   Widget _buildProgressIndicator() {
@@ -75,41 +75,23 @@ class ProportionalTimelineWidget extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
-    final progress = currentProjectPosition.inMilliseconds / 
-                    totalProjectDuration.inMilliseconds;
-    final indicatorPosition = (progress * timelineWidth).clamp(0.0, timelineWidth);
+    // --- FIX: Calculate position based on the fixed scale ---
+    final double indicatorPosition = (currentProjectPosition.inMilliseconds / 1000.0 * pixelsPerSecond)
+        .clamp(0.0, timelineWidth);
 
     return Positioned(
       left: indicatorPosition,
       top: 0,
       bottom: 0,
       child: Container(
-        width: 2,
+        width: 2.5,
         decoration: BoxDecoration(
-          color: Colors.red,
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(2),
           boxShadow: [
             BoxShadow(
-              color: Colors.red.withOpacity(0.5),
-              blurRadius: 4,
-              spreadRadius: 1,
-            ),
-          ],
-        ),
-        child: Column(
-          children: [
-            Container(
-              width: 12,
-              height: 12,
-              decoration: const BoxDecoration(
-                color: Colors.red,
-                shape: BoxShape.circle,
-              ),
-            ),
-            Expanded(
-              child: Container(
-                width: 2,
-                color: Colors.red,
-              ),
+              color: Colors.black.withOpacity(0.5),
+              blurRadius: 3,
             ),
           ],
         ),
@@ -122,6 +104,7 @@ class ProportionalClipWidget extends StatefulWidget {
   final MediaClip clip;
   final bool isSelected;
   final double width;
+  final double pixelsPerSecond; // --- NEW ---
   final VoidCallback onTap;
   final Function(Duration startTime, Duration endTime) onTrimChanged;
 
@@ -130,6 +113,7 @@ class ProportionalClipWidget extends StatefulWidget {
     required this.clip,
     required this.isSelected,
     required this.width,
+    required this.pixelsPerSecond, // --- NEW ---
     required this.onTap,
     required this.onTrimChanged,
   });
@@ -139,59 +123,50 @@ class ProportionalClipWidget extends StatefulWidget {
 }
 
 class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
+  // ... (keep all the state variables: _isLeftHandleActive, _cacheManager, etc.)
   bool _isLeftHandleActive = false;
   bool _isRightHandleActive = false;
-
-  // --- MODIFICATION START ---
-  // State variables for optimized thumbnail loading and caching.
   final MediaCacheManager _cacheManager = MediaCacheManager();
   Widget? _thumbnailWidget;
   bool _isLoading = true;
-
+  
   @override
   void initState() {
     super.initState();
     _loadThumbnail();
   }
 
-  /// Loads the thumbnail, checking the cache first to avoid redundant work.
-  Future<void> _loadThumbnail() async {
-    final cacheKey = '${widget.clip.asset.id}_proportional_thumb_${widget.width.round()}';
+  @override
+  void didUpdateWidget(covariant ProportionalClipWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reload thumbnail if width changes significantly
+    if ((widget.width - oldWidget.width).abs() > 2.0) {
+      _loadThumbnail();
+    }
+  }
 
-    // 1. Check if the widget is already cached
+  Future<void> _loadThumbnail() async {
+    // ... (Keep the _loadThumbnail method exactly as it was, it's already optimized)
+    final cacheKey = '${widget.clip.asset.id}_proportional_thumb_${widget.width.round()}';
     final cachedWidget = _cacheManager.getCachedWidget(cacheKey);
     if (cachedWidget != null) {
-      if (mounted) {
-        setState(() {
-          _thumbnailWidget = cachedWidget;
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() { _thumbnailWidget = cachedWidget; _isLoading = false; });
       return;
     }
-
-    // 2. If not cached, fetch thumbnail data
     try {
       final thumbnailBytes = await widget.clip.asset.thumbnailDataWithSize(
-        ThumbnailSize(widget.width.round(), 60),
+        ThumbnailSize(widget.width.round(), 80),
       );
-
       if (thumbnailBytes != null && mounted) {
         final imageWidget = Image.memory(
           thumbnailBytes,
           fit: BoxFit.cover,
           width: widget.width,
-          height: 60,
-          gaplessPlayback: true, // Prevents flicker on image update
+          height: 80,
+          gaplessPlayback: true,
         );
-
-        // 3. Cache the fully prepared widget for future use
         _cacheManager.setCachedWidget(cacheKey, imageWidget);
-        
-        setState(() {
-          _thumbnailWidget = imageWidget;
-          _isLoading = false;
-        });
+        setState(() { _thumbnailWidget = imageWidget; _isLoading = false; });
       } else if (mounted) {
         setState(() => _isLoading = false);
       }
@@ -200,204 +175,82 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
       if (mounted) setState(() => _isLoading = false);
     }
   }
-  // --- MODIFICATION END ---
-
-
+  
   @override
   Widget build(BuildContext context) {
+    // --- The entire build method for ProportionalClipWidget remains the same ---
+    // --- EXCEPT for the trim handlers. We need to update their logic. ---
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
         width: widget.width,
-        height: 60,
+        height: 80, // Set height to match timeline
         margin: const EdgeInsets.only(right: 1),
-        child: Stack(
-          children: [
-            // Main clip container
-            Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(4),
-                border: widget.isSelected
-                    ? Border.all(color: Colors.purple, width: 2)
-                    : Border.all(color: Colors.grey.withOpacity(0.3), width: 1),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    // --- MODIFICATION START ---
-                    // Replaced FutureBuilder with a more performant state-based builder.
-                    if (_isLoading)
-                      Container(
-                        color: Colors.grey[800],
-                        child: const Center(
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
-                          ),
-                        ),
-                      )
-                    else if (_thumbnailWidget != null)
-                      _thumbnailWidget!
-                    else
-                      // Fallback view if thumbnail fails to load
-                      Container(
-                        color: Colors.grey[800],
-                        child: Icon(
-                          widget.clip.asset.type == AssetType.video ? Icons.videocam : Icons.photo,
-                          color: Colors.white.withOpacity(0.5),
-                          size: 20,
-                        ),
-                      ),
-                    // --- MODIFICATION END ---
-                    
-                    // Duration overlay
-                    Positioned(
-                      bottom: 2,
-                      right: 2,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.7),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: Text(
-                          _formatDuration(widget.clip.trimmedDuration),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 8,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Media type indicator
-                    Positioned(
-                      top: 2,
-                      left: 2,
-                      child: Container(
-                        padding: const EdgeInsets.all(1),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.7),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                        child: Icon(
-                          widget.clip.asset.type == AssetType.video 
-                              ? Icons.videocam 
-                              : Icons.photo,
-                          color: Colors.white,
-                          size: 8,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            
-            // Left trim handle (only for videos and if width is sufficient)
-            if (widget.clip.asset.type == AssetType.video && widget.width > 60)
-              Positioned(
-                left: 0,
-                top: 0,
-                bottom: 0,
-                child: GestureDetector(
-                  onPanStart: (details) {
-                    setState(() {
-                      _isLeftHandleActive = true;
-                    });
-                  },
-                  onPanUpdate: (details) {
-                    _handleLeftTrim(details.delta.dx);
-                  },
-                  onPanEnd: (details) {
-                    setState(() {
-                      _isLeftHandleActive = false;
-                    });
-                  },
-                  child: Container(
-                    width: 8,
-                    decoration: BoxDecoration(
-                      color: _isLeftHandleActive ? Colors.purple : Colors.white,
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(4),
-                        bottomLeft: Radius.circular(4),
-                      ),
-                    ),
-                    child: const Center(
-                      child: Icon(
-                        Icons.drag_handle,
-                        color: Colors.black54,
-                        size: 8,
-                      ),
-                    ),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(
+            color: widget.isSelected ? Colors.purple : Colors.white24, 
+            width: 1.5
+          ),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(3),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Thumbnail logic (remains the same)
+              if (_isLoading)
+                Container(color: Colors.grey[850])
+              else if (_thumbnailWidget != null)
+                _thumbnailWidget!
+              else
+                Container(color: Colors.grey[850], child: Icon(Icons.error, color: Colors.white24)),
+              
+              // Trim handles (update their logic)
+              if (widget.clip.asset.type == AssetType.video && widget.isSelected)
+                Positioned(
+                  left: 0, top: 0, bottom: 0,
+                  child: GestureDetector(
+                    onPanStart: (_) => setState(() => _isLeftHandleActive = true),
+                    onPanUpdate: (details) => _handleLeftTrim(details.delta.dx),
+                    onPanEnd: (_) => setState(() => _isLeftHandleActive = false),
+                    child: _buildTrimHandle(isLeft: true, isActive: _isLeftHandleActive),
                   ),
                 ),
-              ),
-            
-            // Right trim handle (only for videos and if width is sufficient)
-            if (widget.clip.asset.type == AssetType.video && widget.width > 60)
-              Positioned(
-                right: 0,
-                top: 0,
-                bottom: 0,
-                child: GestureDetector(
-                  onPanStart: (details) {
-                    setState(() {
-                      _isRightHandleActive = true;
-                    });
-                  },
-                  onPanUpdate: (details) {
-                    _handleRightTrim(details.delta.dx);
-                  },
-                  onPanEnd: (details) {
-                    setState(() {
-                      _isRightHandleActive = false;
-                    });
-                  },
-                  child: Container(
-                    width: 8,
-                    decoration: BoxDecoration(
-                      color: _isRightHandleActive ? Colors.purple : Colors.white,
-                      borderRadius: const BorderRadius.only(
-                        topRight: Radius.circular(4),
-                        bottomRight: Radius.circular(4),
-                      ),
-                    ),
-                    child: const Center(
-                      child: Icon(
-                        Icons.drag_handle,
-                        color: Colors.black54,
-                        size: 8,
-                      ),
-                    ),
+              if (widget.clip.asset.type == AssetType.video && widget.isSelected)
+                Positioned(
+                  right: 0, top: 0, bottom: 0,
+                  child: GestureDetector(
+                    onPanStart: (_) => setState(() => _isRightHandleActive = true),
+                    onPanUpdate: (details) => _handleRightTrim(details.delta.dx),
+                    onPanEnd: (_) => setState(() => _isRightHandleActive = false),
+                    child: _buildTrimHandle(isLeft: false, isActive: _isRightHandleActive),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
+  Widget _buildTrimHandle({required bool isLeft, required bool isActive}) {
+    return Container(
+      width: 10,
+      color: (isActive ? Colors.purple : Colors.white).withOpacity(0.9),
+      child: const Center(
+        child: Icon(Icons.drag_handle, color: Colors.black54, size: 10),
+      ),
+    );
+  }
+
   void _handleLeftTrim(double deltaX) {
-    // Calculate the time change based on pixel movement relative to clip width
-    final totalDuration = widget.clip.originalDuration.inMilliseconds;
-    // Avoid division by zero if width is somehow zero
-    if (widget.width == 0) return;
-    final millisecondsPerPixel = totalDuration / widget.width;
-    
-    final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
-    
+    // --- FIX: Use pixelsPerSecond for accurate time calculation ---
+    final deltaMilliseconds = (deltaX * 1000 / widget.pixelsPerSecond).round();
     Duration newStartTime = widget.clip.startTime + Duration(milliseconds: deltaMilliseconds);
     
-    // Ensure start time doesn't go below 0 or beyond end time
     newStartTime = Duration(
-      milliseconds: newStartTime.inMilliseconds.clamp(
-        0,
-        widget.clip.endTime.inMilliseconds - 500, // Minimum 0.5 second clip
-      ),
+      milliseconds: newStartTime.inMilliseconds.clamp(0, widget.clip.endTime.inMilliseconds - 500),
     );
     
     if (newStartTime != widget.clip.startTime) {
@@ -406,20 +259,13 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
   }
 
   void _handleRightTrim(double deltaX) {
-    // Calculate the time change based on pixel movement relative to clip width
-    final totalDuration = widget.clip.originalDuration.inMilliseconds;
-    // Avoid division by zero if width is somehow zero
-    if (widget.width == 0) return;
-    final millisecondsPerPixel = totalDuration / widget.width;
-    
-    final deltaMilliseconds = (deltaX * millisecondsPerPixel).round();
-    
+    // --- FIX: Use pixelsPerSecond for accurate time calculation ---
+    final deltaMilliseconds = (deltaX * 1000 / widget.pixelsPerSecond).round();
     Duration newEndTime = widget.clip.endTime + Duration(milliseconds: deltaMilliseconds);
     
-    // Ensure end time doesn't go beyond original duration or before start time
     newEndTime = Duration(
       milliseconds: newEndTime.inMilliseconds.clamp(
-        widget.clip.startTime.inMilliseconds + 500, // Minimum 0.5 second clip
+        widget.clip.startTime.inMilliseconds + 500,
         widget.clip.originalDuration.inMilliseconds,
       ),
     );

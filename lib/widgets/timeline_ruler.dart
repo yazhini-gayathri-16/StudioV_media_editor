@@ -2,26 +2,21 @@ import 'package:flutter/material.dart';
 
 class TimelineRuler extends StatelessWidget {
   final Duration totalDuration;
-  final double timelineWidth;
-  final ScrollController? scrollController;
+  // --- FIX: Use pixelsPerSecond instead of a fixed width ---
+  final double pixelsPerSecond;
 
   const TimelineRuler({
     super.key,
     required this.totalDuration,
-    required this.timelineWidth,
-    this.scrollController,
+    required this.pixelsPerSecond,
   });
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 40,
-      width: timelineWidth,
-      child: CustomPaint(
-        painter: TimelineRulerPainter(
-          totalDuration: totalDuration,
-          timelineWidth: timelineWidth,
-        ),
+    return CustomPaint(
+      painter: TimelineRulerPainter(
+        totalDuration: totalDuration,
+        pixelsPerSecond: pixelsPerSecond,
       ),
     );
   }
@@ -29,95 +24,77 @@ class TimelineRuler extends StatelessWidget {
 
 class TimelineRulerPainter extends CustomPainter {
   final Duration totalDuration;
-  final double timelineWidth;
+  final double pixelsPerSecond;
 
   TimelineRulerPainter({
     required this.totalDuration,
-    required this.timelineWidth,
+    required this.pixelsPerSecond,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white
+    final majorTickPaint = Paint()
+      ..color = Colors.white70
       ..strokeWidth = 1;
 
+    final minorTickPaint = Paint()
+      ..color = Colors.white38
+      ..strokeWidth = 0.5;
+
     final textPainter = TextPainter(
+      textAlign: TextAlign.center,
       textDirection: TextDirection.ltr,
     );
 
-    // Calculate interval based on total duration
-    int intervalSeconds;
-    if (totalDuration.inSeconds <= 30) {
-      intervalSeconds = 2; // Every 2 seconds for short videos
-    } else if (totalDuration.inSeconds <= 120) {
-      intervalSeconds = 5; // Every 5 seconds for medium videos
-    } else {
-      intervalSeconds = 10; // Every 10 seconds for long videos
-    }
-
     final totalSeconds = totalDuration.inSeconds;
-    final pixelsPerSecond = timelineWidth / totalSeconds;
+    if (totalSeconds == 0) return;
 
-    // Draw major ticks and labels
-    for (int i = 0; i <= totalSeconds; i += intervalSeconds) {
-      final x = i * pixelsPerSecond;
-      
-      // Draw tick mark
-      canvas.drawLine(
-        Offset(x, size.height - 15),
-        Offset(x, size.height),
-        paint,
-      );
-
-      // Draw time label
-      final timeText = _formatTime(Duration(seconds: i));
-      textPainter.text = TextSpan(
-        text: timeText,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w400,
-        ),
-      );
-      textPainter.layout();
-      
-      // Center the text over the tick mark
-      final textX = x - (textPainter.width / 2);
-      textPainter.paint(canvas, Offset(textX, 0));
+    // --- FIX: Improved interval logic based on your screenshot ---
+    int intervalSeconds;
+    int minorTickInterval;
+    if (totalSeconds <= 15) {
+      intervalSeconds = 2; // Every 2 seconds
+      minorTickInterval = 1;
+    } else if (totalSeconds <= 60) {
+      intervalSeconds = 5; // Every 5 seconds
+      minorTickInterval = 1;
+    } else {
+      intervalSeconds = 10; // Every 10 seconds
+      minorTickInterval = 5;
     }
 
-    // Draw minor ticks (every second for short intervals)
-    if (intervalSeconds <= 5) {
-      final minorPaint = Paint()
-        ..color = Colors.white.withOpacity(0.5)
-        ..strokeWidth = 0.5;
-
-      for (int i = 0; i <= totalSeconds; i++) {
-        if (i % intervalSeconds != 0) { // Skip major ticks
-          final x = i * pixelsPerSecond;
-          canvas.drawLine(
-            Offset(x, size.height - 8),
-            Offset(x, size.height),
-            minorPaint,
-          );
-        }
+    // Draw ticks and labels
+    for (int s = 0; s <= totalSeconds; s++) {
+      final x = s * pixelsPerSecond;
+      
+      // Draw major ticks with labels
+      if (s % intervalSeconds == 0) {
+        canvas.drawLine(Offset(x, size.height - 15), Offset(x, size.height), majorTickPaint);
+        
+        final timeText = _formatTime(Duration(seconds: s));
+        textPainter.text = TextSpan(
+          text: timeText,
+          style: const TextStyle(color: Colors.white70, fontSize: 10),
+        );
+        textPainter.layout();
+        textPainter.paint(canvas, Offset(x - textPainter.width / 2, 0));
+      } 
+      // Draw minor ticks
+      else if (s % minorTickInterval == 0) {
+        canvas.drawLine(Offset(x, size.height - 8), Offset(x, size.height), minorTickPaint);
       }
     }
   }
 
   String _formatTime(Duration duration) {
-    final minutes = duration.inMinutes;
-    final seconds = duration.inSeconds % 60;
-    
-    if (minutes > 0) {
-      return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-    } else {
-      return '00:${seconds.toString().padLeft(2, '0')}';
-    }
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant TimelineRulerPainter oldDelegate) {
+    // Repaint only if duration or scale changes
+    return oldDelegate.totalDuration != totalDuration || oldDelegate.pixelsPerSecond != pixelsPerSecond;
+  }
 }
-
