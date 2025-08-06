@@ -22,7 +22,7 @@ class _EditorScreenState extends State<EditorScreen> {
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
   Duration _totalProjectDuration = Duration.zero;
-  static const double pixelsPerSecond = 25.0;
+  static const double pixelsPerSecond = 20.0;
 
   final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(Duration.zero);
   List<MediaClip> _mediaClips = [];
@@ -47,7 +47,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     _initializeCurrentMedia();
     _startPositionTimer();
-    _preloadInitialVideos(); // This call will now work correctly
+    _preloadInitialVideos(); 
   }
 
   @override
@@ -115,7 +115,7 @@ class _EditorScreenState extends State<EditorScreen> {
     
     _projectPositionNotifier.value = newPosition;
 
-    // --- NEW: AUTO-SCROLL LOGIC ---
+    // --- ✨ NEW: AUTO-SCROLL LOGIC ✨ ---
     if (_isPlaying && _timelineScrollController.hasClients) {
       final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
       final double viewportWidth = _timelineScrollController.position.viewportDimension;
@@ -236,9 +236,7 @@ class _EditorScreenState extends State<EditorScreen> {
     _updateProjectPosition();
   }
 
-  // --- METHOD ADDED ---
   Future<void> _preloadInitialVideos() async {
-    // Preload the first few clips on initial load
     for (int i = 0; i <= 2; i++) {
       if (i < _mediaClips.length) {
         final clip = _mediaClips[i];
@@ -301,6 +299,8 @@ class _EditorScreenState extends State<EditorScreen> {
     return '${twoDigits(int.parse(minutes))}:${twoDigits(int.parse(seconds))}.${twoDigits(milliseconds)}';
   }
 
+  // ... (The rest of your build method and other helper methods remain unchanged)
+  // --- The `build` method and its helpers do not need any modifications ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -560,9 +560,7 @@ class _EditorScreenState extends State<EditorScreen> {
                 totalProjectDuration: _totalProjectDuration,
                 onClipTap: _jumpToClip,
                 onTrimChanged: _onClipTrimmed,
-                // --- FIX: Pass the CALCULATED total width ---
                 timelineWidth: totalTimelineWidth,
-                // --- NEW: Pass the scale ---
                 pixelsPerSecond: pixelsPerSecond,
               );
             },
@@ -573,19 +571,18 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Widget _buildTimelineRuler() {
-    // --- FIX: Calculate the total width exactly as we did for the clips timeline ---
     final double totalTimelineWidth = _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
 
     return SingleChildScrollView(
-      controller: _rulerScrollController, // Uses the synchronized controller
+      controller: _rulerScrollController, 
       scrollDirection: Axis.horizontal,
-      physics: const NeverScrollableScrollPhysics(), // The user scrolls the top timeline
+      physics: const NeverScrollableScrollPhysics(),
       child: SizedBox(
-        width: totalTimelineWidth, // Crucial: Give the ruler its full width
+        width: totalTimelineWidth, 
         height: 40,
         child: TimelineRuler(
           totalDuration: _totalProjectDuration,
-          pixelsPerSecond: pixelsPerSecond, // Pass the scale
+          pixelsPerSecond: pixelsPerSecond, 
         ),
       ),
     );
