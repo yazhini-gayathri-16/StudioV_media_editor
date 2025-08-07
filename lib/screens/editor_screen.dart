@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
@@ -5,6 +6,7 @@ import '../models/media_clip.dart';
 import '../widgets/proportional_timeline_widget.dart';
 import '../widgets/timeline_ruler.dart';
 import '../services/video_player_manager.dart';
+import 'canvas_screen.dart';
 import 'dart:async';
 
 class EditorScreen extends StatefulWidget {
@@ -19,6 +21,7 @@ class EditorScreen extends StatefulWidget {
 class _EditorScreenState extends State<EditorScreen> {
   int _currentClipIndex = 0;
   VideoPlayerController? _videoController;
+  double? _currentAspectRatio;
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
   Duration _totalProjectDuration = Duration.zero;
@@ -149,6 +152,54 @@ class _EditorScreenState extends State<EditorScreen> {
   void _calculateTotalDuration() {
     _totalProjectDuration = _mediaClips.fold(Duration.zero, (total, clip) => total + clip.trimmedDuration);
     if (mounted) setState(() {});
+  }
+
+  final Map<String, double?> _aspectRatios = {};
+
+  void _navigateToCanvasScreen() async {
+    final currentClip = _mediaClips[_currentClipIndex];
+
+    // Get the file for the current clip.
+    final File? videoFile = await currentClip.asset.file;
+    if (videoFile == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not load video file.')),
+      );
+      return;
+    }
+
+    if (_isPlaying) await _togglePlayPause();
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CanvasScreen(
+          // --- MODIFIED --- Pass the File, not the controller
+          videoFile: videoFile,
+          initialAspectRatio: _aspectRatios[currentClip.asset.id],
+        ),
+      ),
+    );
+
+    // This logic remains the same
+    if (result == 'CANCEL' || result == null) return;
+
+    if (result is CanvasResult) {
+      setState(() {
+        if (result.applyToAll) {
+          for (var clip in _mediaClips) {
+            _aspectRatios[clip.asset.id] = result.aspectRatio;
+          }
+        } else {
+          _aspectRatios[currentClip.asset.id] = result.aspectRatio;
+        }
+      });
+    }
+    
+    // Resume playback if it was playing before
+    if (!_isPlaying && mounted) {
+      // You might want to re-enable playback here if needed
+    }
   }
 
   Future<void> _initializeCurrentMedia({bool wasPlaying = false}) async {
@@ -427,7 +478,12 @@ class _EditorScreenState extends State<EditorScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
-                _buildToolButton(Icons.crop_free, 'Canvas', false),
+                _buildToolButton(
+                  Icons.crop_free, 
+                  'Canvas', 
+                  false, 
+                  onPressed: _navigateToCanvasScreen,
+                ),
                 _buildToolButton(Icons.music_note, 'Audio', false),
                 _buildToolButton(Icons.emoji_emotions, 'Sticker', false),
                 _buildToolButton(Icons.text_fields, 'Text', false),
@@ -474,29 +530,41 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  @override
   Widget _buildPreview() {
     if (_mediaClips.isEmpty || _currentClipIndex >= _mediaClips.length) {
       return const Text('No media selected', style: TextStyle(color: Colors.white));
     }
 
     final currentClip = _mediaClips[_currentClipIndex];
+    final currentAspectRatio = _aspectRatios[currentClip.asset.id]; // Get this clip's ratio
+    Widget? content;
+    double? defaultAspectRatio;
 
     if (currentClip.asset.type == AssetType.video && _isVideoInitialized && _videoController != null && _videoController!.value.isInitialized) {
-      return AspectRatio(
-        aspectRatio: _videoController!.value.aspectRatio,
-        child: VideoPlayer(_videoController!),
-      );
+      content = VideoPlayer(_videoController!);
+      defaultAspectRatio = _videoController!.value.aspectRatio;
     } else if (currentClip.asset.type == AssetType.image) {
-      return FutureBuilder<Widget>(
+      content = FutureBuilder<Widget>(
         future: _buildImagePreview(currentClip.asset),
         builder: (context, snapshot) {
           if (snapshot.hasData) return snapshot.data!;
           return const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple));
         },
       );
+      defaultAspectRatio = currentClip.asset.width / currentClip.asset.height;
     } else {
       return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple)));
     }
+    
+    // The logic here is simpler now.
+    // It correctly applies the specific ratio for the currently active clip.
+    return AspectRatio(
+      aspectRatio: currentAspectRatio ?? defaultAspectRatio ?? 16 / 9,
+      child: ClipRect( // Important: Clip the content to the AspectRatio bounds
+        child: content,
+      ),
+    );
   }
 
   Future<Widget> _buildImagePreview(AssetEntity asset) async {
@@ -509,36 +577,36 @@ class _EditorScreenState extends State<EditorScreen> {
     return const Text('Error loading preview', style: TextStyle(color: Colors.white));
   }
 
-  Widget _buildToolButton(IconData icon, String label, bool hasNotification) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Stack(
+  Widget _buildToolButton(IconData icon, String label, bool hasNotification, {VoidCallback? onPressed}) {
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.all(8.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Icon(icon, color: Colors.white, size: 24),
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(icon, color: Colors.white, size: 24),
+                if (hasNotification)
+                  Positioned(
+                    right: -4,
+                    top: -4,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                    ),
+                  ),
+              ],
             ),
-            if (hasNotification)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                ),
-              ),
+            const SizedBox(height: 8),
+            Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
           ],
         ),
-        const SizedBox(height: 4),
-        Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
-      ],
+      ),
     );
   }
 
