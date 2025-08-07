@@ -1,3 +1,5 @@
+// lib/screens/editor_screen.dart
+
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -21,7 +23,6 @@ class EditorScreen extends StatefulWidget {
 class _EditorScreenState extends State<EditorScreen> {
   int _currentClipIndex = 0;
   VideoPlayerController? _videoController;
-  double? _currentAspectRatio;
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
   Duration _totalProjectDuration = Duration.zero;
@@ -38,6 +39,9 @@ class _EditorScreenState extends State<EditorScreen> {
   final ScrollController _rulerScrollController = ScrollController();
 
   int _mediaInitVersion = 0;
+  
+  final Map<String, double?> _aspectRatios = {};
+  final Map<String, Matrix4?> _transformations = {};
 
   @override
   void initState() {
@@ -118,23 +122,17 @@ class _EditorScreenState extends State<EditorScreen> {
     
     _projectPositionNotifier.value = newPosition;
 
-    // --- ✨ NEW: AUTO-SCROLL LOGIC ✨ ---
     if (_isPlaying && _timelineScrollController.hasClients) {
       final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
       final double viewportWidth = _timelineScrollController.position.viewportDimension;
       final double currentOffset = _timelineScrollController.offset;
       
-      // Define a "safe zone" in the middle of the screen.
-      // We want the playhead to stay between 40% and 60% of the screen width.
       final double safeZoneStart = currentOffset + viewportWidth * 0.4;
       final double safeZoneEnd = currentOffset + viewportWidth * 0.6;
 
-      // If the playhead moves outside the safe zone, animate the scroll view
-      // to bring the playhead back to the center of the screen.
       if (playheadX < safeZoneStart || playheadX > safeZoneEnd) {
         final double targetOffset = playheadX - (viewportWidth / 2);
         
-        // Ensure the target offset is within the valid scroll range
         final double clampedOffset = targetOffset.clamp(
           _timelineScrollController.position.minScrollExtent,
           _timelineScrollController.position.maxScrollExtent,
@@ -154,16 +152,13 @@ class _EditorScreenState extends State<EditorScreen> {
     if (mounted) setState(() {});
   }
 
-  final Map<String, double?> _aspectRatios = {};
-
   void _navigateToCanvasScreen() async {
+    if (_mediaClips.isEmpty) return;
     final currentClip = _mediaClips[_currentClipIndex];
-
-    // Get the file for the current clip.
-    final File? videoFile = await currentClip.asset.file;
-    if (videoFile == null) {
+    final File? assetFile = await currentClip.asset.file;
+    if (assetFile == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not load video file.')),
+        const SnackBar(content: Text('Could not load the media file.')),
       );
       return;
     }
@@ -174,14 +169,13 @@ class _EditorScreenState extends State<EditorScreen> {
       context,
       MaterialPageRoute(
         builder: (context) => CanvasScreen(
-          // --- MODIFIED --- Pass the File, not the controller
-          videoFile: videoFile,
+          videoFile: assetFile,
           initialAspectRatio: _aspectRatios[currentClip.asset.id],
+          initialTransformation: _transformations[currentClip.asset.id],
         ),
       ),
     );
 
-    // This logic remains the same
     if (result == 'CANCEL' || result == null) return;
 
     if (result is CanvasResult) {
@@ -189,16 +183,13 @@ class _EditorScreenState extends State<EditorScreen> {
         if (result.applyToAll) {
           for (var clip in _mediaClips) {
             _aspectRatios[clip.asset.id] = result.aspectRatio;
+            _transformations[clip.asset.id] = result.transformation;
           }
         } else {
           _aspectRatios[currentClip.asset.id] = result.aspectRatio;
+          _transformations[currentClip.asset.id] = result.transformation;
         }
       });
-    }
-    
-    // Resume playback if it was playing before
-    if (!_isPlaying && mounted) {
-      // You might want to re-enable playback here if needed
     }
   }
 
@@ -350,8 +341,6 @@ class _EditorScreenState extends State<EditorScreen> {
     return '${twoDigits(int.parse(minutes))}:${twoDigits(int.parse(seconds))}.${twoDigits(milliseconds)}';
   }
 
-  // ... (The rest of your build method and other helper methods remain unchanged)
-  // --- The `build` method and its helpers do not need any modifications ---
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -398,77 +387,80 @@ class _EditorScreenState extends State<EditorScreen> {
             flex: 3,
             child: Container(
               width: double.infinity,
-              color: Colors.black,
-              child: Stack(
-                children: [
-                  Center(child: _buildPreview()),
-                  Positioned.fill(
-                    child: GestureDetector(
-                      onTap: _togglePlayPause,
-                      child: Container(
-                        color: Colors.transparent,
-                        child: Center(
-                          child: AnimatedOpacity(
-                            opacity: _isPlaying ? 0.0 : 1.0,
-                            duration: const Duration(milliseconds: 300),
-                            child: Container(
-                              width: 80,
-                              height: 80,
-                              decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.7),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                _isPlaying ? Icons.pause : Icons.play_arrow,
-                                color: Colors.white,
-                                size: 40,
+              color: const Color(0xFF1A1A1A), 
+              child: Center(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    _buildPreview(),
+                    Positioned.fill(
+                      child: GestureDetector(
+                        onTap: _togglePlayPause,
+                        child: Container(
+                          color: Colors.transparent,
+                          child: Center(
+                            child: AnimatedOpacity(
+                              opacity: _isPlaying ? 0.0 : 1.0,
+                              duration: const Duration(milliseconds: 300),
+                              child: Container(
+                                width: 80,
+                                height: 80,
+                                decoration: BoxDecoration(
+                                  color: Colors.black.withOpacity(0.7),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  _isPlaying ? Icons.pause : Icons.play_arrow,
+                                  color: Colors.white,
+                                  size: 40,
+                                ),
                               ),
                             ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    bottom: 20,
-                    left: 20,
-                    right: 20,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.7),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          ValueListenableBuilder<Duration>(
-                            valueListenable: _projectPositionNotifier,
-                            builder: (context, position, child) {
-                              return Text(
-                                _formatDuration(position),
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 14,
-                                ),
-                              );
-                            },
-                          ),
-                          Text(
-                            _formatDuration(_totalProjectDuration),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 14,
+                    Positioned(
+                      bottom: 20,
+                      left: 20,
+                      right: 20,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            ValueListenableBuilder<Duration>(
+                              valueListenable: _projectPositionNotifier,
+                              builder: (context, position, child) {
+                                return Text(
+                                  _formatDuration(position),
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 14,
+                                  ),
+                                );
+                              },
                             ),
-                          ),
-                        ],
+                            Text(
+                              _formatDuration(_totalProjectDuration),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -530,20 +522,21 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  @override
+  // --- MODIFIED: Rewritten to correctly apply the transformation ---
   Widget _buildPreview() {
     if (_mediaClips.isEmpty || _currentClipIndex >= _mediaClips.length) {
       return const Text('No media selected', style: TextStyle(color: Colors.white));
     }
 
     final currentClip = _mediaClips[_currentClipIndex];
-    final currentAspectRatio = _aspectRatios[currentClip.asset.id]; // Get this clip's ratio
+    final canvasAspectRatio = _aspectRatios[currentClip.asset.id];
+    final transformation = _transformations[currentClip.asset.id];
     Widget? content;
-    double? defaultAspectRatio;
+    double? intrinsicAspectRatio;
 
     if (currentClip.asset.type == AssetType.video && _isVideoInitialized && _videoController != null && _videoController!.value.isInitialized) {
       content = VideoPlayer(_videoController!);
-      defaultAspectRatio = _videoController!.value.aspectRatio;
+      intrinsicAspectRatio = _videoController!.value.aspectRatio;
     } else if (currentClip.asset.type == AssetType.image) {
       content = FutureBuilder<Widget>(
         future: _buildImagePreview(currentClip.asset),
@@ -552,17 +545,30 @@ class _EditorScreenState extends State<EditorScreen> {
           return const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple));
         },
       );
-      defaultAspectRatio = currentClip.asset.width / currentClip.asset.height;
+      intrinsicAspectRatio = currentClip.asset.width / currentClip.asset.height;
     } else {
       return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple)));
     }
     
-    // The logic here is simpler now.
-    // It correctly applies the specific ratio for the currently active clip.
+    // The outer AspectRatio sets the final frame size.
     return AspectRatio(
-      aspectRatio: currentAspectRatio ?? defaultAspectRatio ?? 16 / 9,
-      child: ClipRect( // Important: Clip the content to the AspectRatio bounds
-        child: content,
+      aspectRatio: canvasAspectRatio ?? intrinsicAspectRatio ?? 16 / 9,
+      child: Container(
+        color: Colors.black,
+        child: ClipRect(
+          // The Transform is now OUTSIDE the Center widget. This is the fix.
+          // It transforms the entire viewport, and then the media is centered within it.
+          // This correctly mimics the InteractiveViewer's behavior.
+          child: Transform(
+            transform: transformation ?? Matrix4.identity(),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: intrinsicAspectRatio ?? 16 / 9,
+                child: content,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -570,7 +576,9 @@ class _EditorScreenState extends State<EditorScreen> {
   Future<Widget> _buildImagePreview(AssetEntity asset) async {
     try {
       final file = await asset.file;
-      if (file != null) return Image.file(file, fit: BoxFit.contain);
+      if (file != null) {
+        return Image.file(file, fit: BoxFit.cover);
+      }
     } catch (e) {
       print('Error loading image preview: $e');
     }
@@ -613,7 +621,6 @@ class _EditorScreenState extends State<EditorScreen> {
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final timelineWidth = constraints.maxWidth;
         final double totalTimelineWidth = _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
         return SingleChildScrollView(
           controller: _timelineScrollController,

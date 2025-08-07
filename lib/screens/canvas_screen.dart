@@ -6,21 +6,25 @@ import 'package:video_player/video_player.dart';
 import '../utils/canvas_options.dart';
 import '../widgets/canvas_button_widget.dart';
 
-// This class definition remains the same
+// --- MODIFIED: Added transformation property ---
 class CanvasResult {
   final double? aspectRatio;
+  final Matrix4? transformation;
   final bool applyToAll;
-  CanvasResult({this.aspectRatio, this.applyToAll = false});
+  CanvasResult({this.aspectRatio, this.transformation, this.applyToAll = false});
 }
 
 class CanvasScreen extends StatefulWidget {
   final File videoFile;
   final double? initialAspectRatio;
+  // --- NEW: To receive existing transformation for re-editing ---
+  final Matrix4? initialTransformation;
 
   const CanvasScreen({
     super.key,
     required this.videoFile,
     this.initialAspectRatio,
+    this.initialTransformation,
   });
 
   @override
@@ -38,11 +42,19 @@ class _CanvasScreenState extends State<CanvasScreen> {
   double _currentScale = 1.0;
   static const double _minScale = 1.0;
   static const double _maxScale = 4.0;
+  
+  final GlobalKey _interactiveViewerKey = GlobalKey();
+
 
   @override
   void initState() {
     super.initState();
     _selectedAspectRatio = widget.initialAspectRatio;
+    // --- NEW: Apply initial transformation if it exists ---
+    if (widget.initialTransformation != null) {
+      _transformationController.value = widget.initialTransformation!;
+      _currentScale = _transformationController.value.getMaxScaleOnAxis();
+    }
     _initializeController();
   }
 
@@ -72,9 +84,25 @@ class _CanvasScreenState extends State<CanvasScreen> {
   void _onScaleChanged(double scale) {
     setState(() {
       _currentScale = scale;
-      _transformationController.value = Matrix4.identity()..scale(_currentScale);
+      final RenderBox? renderBox =
+          _interactiveViewerKey.currentContext?.findRenderObject() as RenderBox?;
+
+      if (renderBox == null) {
+        _transformationController.value = Matrix4.identity()..scale(scale);
+      } else {
+        final size = renderBox.size;
+        final center = Offset(size.width / 2, size.height / 2);
+        
+        final newMatrix = Matrix4.identity()
+          ..translate(center.dx, center.dy)
+          ..scale(scale)
+          ..translate(-center.dx, -center.dy);
+        
+        _transformationController.value = newMatrix;
+      }
     });
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -91,8 +119,10 @@ class _CanvasScreenState extends State<CanvasScreen> {
           IconButton(
             icon: const Icon(Icons.check, color: Colors.white),
             onPressed: () {
+              // --- MODIFIED: Pass back the transformation matrix ---
               final result = CanvasResult(
                 aspectRatio: _selectedAspectRatio,
+                transformation: _transformationController.value,
                 applyToAll: _applyToAll,
               );
               Navigator.pop(context, result);
@@ -104,28 +134,28 @@ class _CanvasScreenState extends State<CanvasScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
-                // --- MODIFIED LAYOUT ---
                 Expanded(
                   child: Container(
                     width: double.infinity,
-                    color: Colors.black,
-                    // Center allows the AspectRatio to size itself correctly
                     child: Center(
                       child: AspectRatio(
                         aspectRatio:
                             _selectedAspectRatio ?? _controller!.value.aspectRatio,
-                        // ClipRect prevents the zoomed content from painting outside the frame
-                        child: ClipRect(
-                          child: InteractiveViewer(
-                            transformationController: _transformationController,
-                            minScale: _minScale,
-                            maxScale: _maxScale,
-                            panEnabled: true,
-                            scaleEnabled: true,
-                            child: Center(
-                              child: AspectRatio(
-                                aspectRatio: _controller!.value.aspectRatio,
-                                child: VideoPlayer(_controller!),
+                        child: Container(
+                          color: Colors.black,
+                          child: ClipRRect(
+                            child: InteractiveViewer(
+                              key: _interactiveViewerKey,
+                              transformationController: _transformationController,
+                              minScale: _minScale,
+                              maxScale: _maxScale,
+                              panEnabled: true,
+                              scaleEnabled: true,
+                              child: Center(
+                                child: AspectRatio(
+                                  aspectRatio: _controller!.value.aspectRatio,
+                                  child: VideoPlayer(_controller!),
+                                ),
                               ),
                             ),
                           ),
@@ -208,8 +238,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
             onTap: () {
               setState(() {
                 _selectedAspectRatio = option.value;
-                // Reset zoom and pan when ratio changes
-                _onScaleChanged(1.0);
+                _onScaleChanged(1.0); // Reset zoom/pan when ratio changes
               });
             },
           );
