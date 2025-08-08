@@ -3,10 +3,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
+import '../models/media_clip.dart';
+import '../services/video_player_manager.dart';
 import '../utils/canvas_options.dart';
 import '../widgets/canvas_button_widget.dart';
 
-// --- MODIFIED: Added transformation property ---
 class CanvasResult {
   final double? aspectRatio;
   final Matrix4? transformation;
@@ -15,14 +16,16 @@ class CanvasResult {
 }
 
 class CanvasScreen extends StatefulWidget {
-  final File videoFile;
+  // --- MODIFIED: Now takes a MediaClip and the manager ---
+  final MediaClip clip;
+  final VideoPlayerManager videoManager;
   final double? initialAspectRatio;
-  // --- NEW: To receive existing transformation for re-editing ---
   final Matrix4? initialTransformation;
 
   const CanvasScreen({
     super.key,
-    required this.videoFile,
+    required this.clip,
+    required this.videoManager,
     this.initialAspectRatio,
     this.initialTransformation,
   });
@@ -37,8 +40,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
 
   double? _selectedAspectRatio;
   bool _applyToAll = false;
-  final TransformationController _transformationController =
-      TransformationController();
+  final TransformationController _transformationController = TransformationController();
   double _currentScale = 1.0;
   static const double _minScale = 1.0;
   static const double _maxScale = 4.0;
@@ -50,7 +52,6 @@ class _CanvasScreenState extends State<CanvasScreen> {
   void initState() {
     super.initState();
     _selectedAspectRatio = widget.initialAspectRatio;
-    // --- NEW: Apply initial transformation if it exists ---
     if (widget.initialTransformation != null) {
       _transformationController.value = widget.initialTransformation!;
       _currentScale = _transformationController.value.getMaxScaleOnAxis();
@@ -58,25 +59,24 @@ class _CanvasScreenState extends State<CanvasScreen> {
     _initializeController();
   }
 
+  // --- MODIFIED: Uses the VideoPlayerManager for instant loading ---
   Future<void> _initializeController() async {
-    _controller = VideoPlayerController.file(widget.videoFile);
-    try {
-      await _controller!.initialize();
-      await _controller!.setLooping(true);
-      await _controller!.play();
-      if (mounted) {
-        setState(() {
-          _isControllerInitialized = true;
-        });
-      }
-    } catch (e) {
-      print("Error initializing canvas controller: $e");
+    // Get the already initialized controller from the manager
+    final controller = await widget.videoManager.getController(widget.clip);
+    if (mounted) {
+      setState(() {
+        _controller = controller;
+        _isControllerInitialized = _controller != null && _controller!.value.isInitialized;
+      });
+      // Ensure it's playing and looping for the preview
+      _controller?.play();
+      _controller?.setLooping(true);
     }
   }
 
   @override
   void dispose() {
-    _controller?.dispose();
+    // We don't dispose the controller here because the manager owns it.
     _transformationController.dispose();
     super.dispose();
   }
@@ -103,7 +103,6 @@ class _CanvasScreenState extends State<CanvasScreen> {
     });
   }
 
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -119,7 +118,6 @@ class _CanvasScreenState extends State<CanvasScreen> {
           IconButton(
             icon: const Icon(Icons.check, color: Colors.white),
             onPressed: () {
-              // --- MODIFIED: Pass back the transformation matrix ---
               final result = CanvasResult(
                 aspectRatio: _selectedAspectRatio,
                 transformation: _transformationController.value,
@@ -131,7 +129,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
         ],
       ),
       body: !_isControllerInitialized
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple)))
           : Column(
               children: [
                 Expanded(
@@ -238,7 +236,7 @@ class _CanvasScreenState extends State<CanvasScreen> {
             onTap: () {
               setState(() {
                 _selectedAspectRatio = option.value;
-                _onScaleChanged(1.0); // Reset zoom/pan when ratio changes
+                _onScaleChanged(1.0);
               });
             },
           );

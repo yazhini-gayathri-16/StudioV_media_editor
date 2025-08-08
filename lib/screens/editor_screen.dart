@@ -5,10 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 import '../models/media_clip.dart';
+import '../models/text_overlay_model.dart';
 import '../widgets/proportional_timeline_widget.dart';
 import '../widgets/timeline_ruler.dart';
 import '../services/video_player_manager.dart';
 import 'canvas_screen.dart';
+import 'text_editor_screen.dart';
 import 'dart:async';
 
 class EditorScreen extends StatefulWidget {
@@ -42,6 +44,8 @@ class _EditorScreenState extends State<EditorScreen> {
   
   final Map<String, double?> _aspectRatios = {};
   final Map<String, Matrix4?> _transformations = {};
+
+  List<TextOverlay> _projectTextOverlays = [];
 
   @override
   void initState() {
@@ -155,21 +159,15 @@ class _EditorScreenState extends State<EditorScreen> {
   void _navigateToCanvasScreen() async {
     if (_mediaClips.isEmpty) return;
     final currentClip = _mediaClips[_currentClipIndex];
-    final File? assetFile = await currentClip.asset.file;
-    if (assetFile == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not load the media file.')),
-      );
-      return;
-    }
-
+    
     if (_isPlaying) await _togglePlayPause();
 
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => CanvasScreen(
-          videoFile: assetFile,
+          clip: currentClip,
+          videoManager: _videoManager,
           initialAspectRatio: _aspectRatios[currentClip.asset.id],
           initialTransformation: _transformations[currentClip.asset.id],
         ),
@@ -189,6 +187,30 @@ class _EditorScreenState extends State<EditorScreen> {
           _aspectRatios[currentClip.asset.id] = result.aspectRatio;
           _transformations[currentClip.asset.id] = result.transformation;
         }
+      });
+    }
+  }
+
+  void _navigateToTextEditor() async {
+    if (widget.mediaClips.isEmpty) return;
+    if (_isPlaying) await _togglePlayPause();
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TextEditorScreen(
+          mediaClips: _mediaClips,
+          canvasAspectRatio: _aspectRatios[_mediaClips[_currentClipIndex].asset.id],
+          canvasTransform: _transformations[_mediaClips[_currentClipIndex].asset.id],
+          videoManager: _videoManager,
+          initialOverlays: _projectTextOverlays,
+        ),
+      ),
+    );
+
+    if (result is TextEditorResult) {
+      setState(() {
+        _projectTextOverlays = result.overlays;
       });
     }
   }
@@ -478,7 +500,12 @@ class _EditorScreenState extends State<EditorScreen> {
                 ),
                 _buildToolButton(Icons.music_note, 'Audio', false),
                 _buildToolButton(Icons.emoji_emotions, 'Sticker', false),
-                _buildToolButton(Icons.text_fields, 'Text', false),
+                _buildToolButton(
+                  Icons.text_fields, 
+                  'Text', 
+                  false,
+                  onPressed: _navigateToTextEditor,
+                ),
                 _buildToolButton(Icons.auto_awesome, 'Effect', true),
                 _buildToolButton(Icons.filter, 'Filter', false),
                 _buildToolButton(Icons.picture_in_picture, 'PIP', false),
@@ -522,7 +549,6 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // --- MODIFIED: Rewritten to correctly apply the transformation ---
   Widget _buildPreview() {
     if (_mediaClips.isEmpty || _currentClipIndex >= _mediaClips.length) {
       return const Text('No media selected', style: TextStyle(color: Colors.white));
@@ -550,21 +576,38 @@ class _EditorScreenState extends State<EditorScreen> {
       return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple)));
     }
     
-    // The outer AspectRatio sets the final frame size.
+    final visibleOverlays = _projectTextOverlays.where((overlay) =>
+      _projectPositionNotifier.value >= overlay.startTime &&
+      _projectPositionNotifier.value <= overlay.endTime
+    );
+
     return AspectRatio(
       aspectRatio: canvasAspectRatio ?? intrinsicAspectRatio ?? 16 / 9,
       child: Container(
         color: Colors.black,
         child: ClipRect(
-          // The Transform is now OUTSIDE the Center widget. This is the fix.
-          // It transforms the entire viewport, and then the media is centered within it.
-          // This correctly mimics the InteractiveViewer's behavior.
           child: Transform(
             transform: transformation ?? Matrix4.identity(),
             child: Center(
               child: AspectRatio(
                 aspectRatio: intrinsicAspectRatio ?? 16 / 9,
-                child: content,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    if (content != null) content,
+                    ...visibleOverlays.map((overlay) => Positioned(
+                      left: overlay.position.dx,
+                      top: overlay.position.dy,
+                      child: Transform.rotate(
+                        angle: overlay.angle,
+                        child: Transform.scale(
+                          scale: overlay.scale,
+                          child: Text(overlay.text, style: overlay.style),
+                        ),
+                      ),
+                    )),
+                  ],
+                ),
               ),
             ),
           ),
@@ -618,6 +661,7 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
+  // --- MODIFIED: Added a Stack to render the playhead on top of the clips ---
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -628,20 +672,47 @@ class _EditorScreenState extends State<EditorScreen> {
           child: ValueListenableBuilder<Duration>(
             valueListenable: _projectPositionNotifier,
             builder: (context, position, child) {
-              return ProportionalTimelineWidget(
-                mediaClips: _mediaClips,
-                currentClipIndex: _currentClipIndex,
-                currentProjectPosition: position,
-                totalProjectDuration: _totalProjectDuration,
-                onClipTap: _jumpToClip,
-                onTrimChanged: _onClipTrimmed,
-                timelineWidth: totalTimelineWidth,
-                pixelsPerSecond: pixelsPerSecond,
+              return Stack(
+                children: [
+                  // Layer 1: The clips
+                  ProportionalTimelineWidget(
+                    mediaClips: _mediaClips,
+                    currentClipIndex: _currentClipIndex,
+                    currentProjectPosition: position,
+                    totalProjectDuration: _totalProjectDuration,
+                    onClipTap: _jumpToClip,
+                    onTrimChanged: _onClipTrimmed,
+                    timelineWidth: totalTimelineWidth,
+                    pixelsPerSecond: pixelsPerSecond,
+                  ),
+                  // Layer 2: The playhead
+                  _buildPlayhead(totalTimelineWidth, position),
+                ],
               );
             },
           ),
         );
       },
+    );
+  }
+
+  // --- NEW: Helper method to build the playhead ---
+  Widget _buildPlayhead(double timelineWidth, Duration position) {
+    final double indicatorPosition = (position.inMilliseconds / 1000.0 * pixelsPerSecond)
+        .clamp(0.0, timelineWidth);
+
+    return Positioned(
+      left: indicatorPosition,
+      top: 0,
+      bottom: 0,
+      child: Container(
+        width: 3,
+        decoration: BoxDecoration(
+          color: const Color.fromARGB(255, 235, 13, 13),
+          borderRadius: BorderRadius.circular(2),
+          boxShadow: [ BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 4) ],
+        ),
+      ),
     );
   }
 

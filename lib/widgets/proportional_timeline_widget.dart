@@ -1,3 +1,5 @@
+// lib/widgets/proportional_timeline_widget.dart
+
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -31,56 +33,34 @@ class ProportionalTimelineWidget extends StatelessWidget {
       return const SizedBox.shrink();
     }
 
+    // --- MODIFIED: Removed the Stack and the progress indicator ---
+    // This widget is now only responsible for rendering the clips themselves.
     return SizedBox(
       width: timelineWidth,
       height: 80,
-      child: Stack(
-        alignment: Alignment.centerLeft,
-        children: [
-          Row(
-            children: mediaClips.map((clip) {
-              final index = mediaClips.indexOf(clip);
-              final double clipWidth = clip.trimmedDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
-              return ProportionalClipWidget(
-                key: ValueKey(clip.asset.id + clip.trimmedDuration.toString()),
-                clip: clip,
-                isSelected: index == currentClipIndex,
-                width: clipWidth,
-                pixelsPerSecond: pixelsPerSecond,
-                onTap: () => onClipTap(index),
-                onTrimChanged: (newStartTime, newEndTime) {
-                  onTrimChanged(index, newStartTime, newEndTime);
-                },
-              );
-            }).toList(),
-          ),
-          _buildProgressIndicator(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProgressIndicator() {
-    final double indicatorPosition = (currentProjectPosition.inMilliseconds / 1000.0 * pixelsPerSecond)
-        .clamp(0.0, timelineWidth);
-
-    return Positioned(
-      left: indicatorPosition,
-      child: Container(
-        width: 3,
-        height: 80, // Full height of the timeline
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(2),
-          boxShadow: [ BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 4) ],
-        ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: mediaClips.map((clip) {
+          final index = mediaClips.indexOf(clip);
+          final double clipWidth = clip.trimmedDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
+          return ProportionalClipWidget(
+            key: ValueKey(clip.asset.id + clip.trimmedDuration.toString()),
+            clip: clip,
+            isSelected: index == currentClipIndex,
+            width: clipWidth,
+            pixelsPerSecond: pixelsPerSecond,
+            onTap: () => onClipTap(index),
+            onTrimChanged: (newStartTime, newEndTime) {
+              onTrimChanged(index, newStartTime, newEndTime);
+            },
+          );
+        }).toList(),
       ),
     );
   }
 }
 
 
-// --- COMPLETELY REWRITTEN WIDGET FOR FILMSTRIP STYLE ---
 class ProportionalClipWidget extends StatefulWidget {
   final MediaClip clip;
   final bool isSelected;
@@ -116,11 +96,9 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
   }
 
   Future<void> _loadThumbnail() async {
-    // We only need one high-quality square thumbnail to create the filmstrip.
-    // It will be tiled horizontally.
     try {
       final bytes = await widget.clip.asset.thumbnailDataWithSize(
-        const ThumbnailSize(200, 200), // Request a square, high-quality thumbnail
+        const ThumbnailSize(200, 200),
       );
       if (mounted) {
         setState(() {
@@ -154,11 +132,9 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // Filmstrip background
               if (_isLoading)
                 Container(color: Colors.grey.shade900)
               else if (_thumbnailBytes != null)
-                // Use a ListView to tile the thumbnail horizontally
                 ListView.builder(
                   scrollDirection: Axis.horizontal,
                   physics: const NeverScrollableScrollPhysics(),
@@ -166,7 +142,7 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
                     return Image.memory(
                       _thumbnailBytes!,
                       fit: BoxFit.cover,
-                      width: 80, // Tile width equals the timeline height for a square look
+                      width: 80,
                       height: 80,
                       gaplessPlayback: true,
                     );
@@ -175,7 +151,6 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
               else
                 Container(color: Colors.grey.shade900, child: const Icon(Icons.error, color: Colors.white24)),
 
-              // Trim handles
               if (widget.clip.asset.type == AssetType.video && widget.isSelected)
                 _buildTrimHandles(),
             ],
@@ -220,7 +195,6 @@ class _ProportionalClipWidgetState extends State<ProportionalClipWidget> {
     );
   }
   
-  // The trim logic remains the same as it correctly uses pixelsPerSecond
   void _handleLeftTrim(double deltaX) {
     final deltaMilliseconds = (deltaX * 1000 / widget.pixelsPerSecond).round();
     Duration newStartTime = widget.clip.startTime + Duration(milliseconds: deltaMilliseconds);

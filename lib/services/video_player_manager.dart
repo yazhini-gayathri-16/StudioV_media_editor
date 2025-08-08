@@ -1,3 +1,5 @@
+// lib/services/video_player_manager.dart
+
 import 'dart:io';
 import 'package:video_player/video_player.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -14,37 +16,39 @@ class VideoPlayerManager {
   final Map<String, File> _fileCache = {};
   static const int maxFileCacheSize = 50;
   
-  // This cache is for preloaded (non-active) controllers
   final Map<String, VideoPlayerController> _preloadCache = {};
-  static const int maxPreloadCacheSize = 5; // A smaller cache for only what's next
+  static const int maxPreloadCacheSize = 5;
 
   /// Gets a controller for a clip, making it the new active one.
-  /// This method intelligently disposes of the previously active controller.
+  /// This method safely caches the previously active controller instead of disposing it.
   Future<VideoPlayerController?> getController(MediaClip clip) async {
-    // --- FIX: Dispose the PREVIOUS active controller ---
-    // If the new clip is different from the currently active one, dispose the old one.
-    if (_activeController != null && _activeControllerId != clip.asset.id) {
-        // Only dispose it if it's not in the preload cache for reuse.
-        if (!_preloadCache.containsKey(_activeControllerId)) {
-            await _activeController!.dispose();
+    // If the requested clip's controller is already active, just return it.
+    if (_activeControllerId == clip.asset.id && _activeController != null) {
+      return _activeController;
+    }
+
+    // If a different controller was active, move it to the preload cache for later reuse.
+    if (_activeController != null && _activeControllerId != null) {
+      if (!_preloadCache.containsKey(_activeControllerId)) {
+        // Manage cache size before adding a new item.
+        if (_preloadCache.length >= maxPreloadCacheSize) {
+          final oldestKey = _preloadCache.keys.first;
+          await _preloadCache[oldestKey]?.dispose();
+          _preloadCache.remove(oldestKey);
         }
-        _activeController = null;
+        _preloadCache[_activeControllerId!] = _activeController!;
+      }
     }
     
     _activeControllerId = clip.asset.id;
 
-    // Check if the requested controller is already preloaded
+    // Check if the newly requested controller is in the preload cache.
     if (_preloadCache.containsKey(clip.asset.id)) {
       _activeController = _preloadCache.remove(clip.asset.id);
       return _activeController;
     }
 
-    // If it's the same as the already active controller, just return it.
-    if (_activeController != null) {
-        return _activeController;
-    }
-
-    // Otherwise, create a new one
+    // If it's not active or preloaded, create a new one.
     try {
       final file = await _getCachedFile(clip.asset);
       if (file == null) return null;
