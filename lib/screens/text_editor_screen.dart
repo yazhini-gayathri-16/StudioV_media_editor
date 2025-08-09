@@ -71,7 +71,9 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
     super.initState();
     _overlays = List.from(widget.initialOverlays);
     _calculateTotalDuration();
-    _initializeCurrentMedia();
+    // Start playing immediately when entering the screen
+    _isPlaying = true; 
+    _initializeCurrentMedia(wasPlaying: _isPlaying);
     _startPositionTimer();
   }
 
@@ -79,6 +81,7 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
     _totalProjectDuration = widget.mediaClips.fold(Duration.zero, (total, clip) => total + clip.trimmedDuration);
   }
   
+  // --- MODIFIED: Removed setLooping(true) to allow continuous playback ---
   Future<void> _initializeCurrentMedia({bool wasPlaying = false}) async {
     final int requestVersion = ++_mediaInitVersion;
     if (_currentClipIndex >= widget.mediaClips.length) return;
@@ -100,8 +103,8 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
           await _videoController!.seekTo(currentClip.startTime);
           await _videoController!.play();
         } else if (_videoController != null) {
+          // No longer sets looping, allowing our custom timeline logic to take over
           _videoController!.play();
-          _videoController!.setLooping(true);
         }
       } else { 
         await widget.videoManager.getController(currentClip);
@@ -216,7 +219,6 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
     });
   }
 
-  // --- MODIFIED: Restructured the main build method with flexible widgets ---
   @override
   Widget build(BuildContext context) {
     final selectedOverlay = _selectedOverlayId != null
@@ -224,7 +226,7 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
         : null;
 
     return Scaffold(
-      resizeToAvoidBottomInset: true, // Allow resizing for keyboard
+      resizeToAvoidBottomInset: true,
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1A1A1A),
@@ -244,26 +246,24 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
       ),
       body: Column(
         children: [
-          // Video Preview now has a flex factor to control its size
           Expanded(
-            flex: 3, // Takes up 3 parts of the available space
+            flex: 3,
             child: _buildVideoPreview(),
           ),
-          // Timeline area also has a flex factor
           Expanded(
-            flex: 2, // Takes up 2 parts, giving it more room than a fixed height
+            flex: 2,
             child: Container(
               color: const Color(0xFF1A1A1A),
               child: _buildFullTimeline(),
             ),
           ),
-          // The bottom toolbar's size is determined by its content
           _buildBottomToolbar(selectedOverlay),
         ],
       ),
     );
   }
 
+  // --- MODIFIED: Added Stack for play/pause overlay ---
   Widget _buildVideoPreview() {
     if (!_isVideoInitialized && _videoController == null) {
       return const Center(child: CircularProgressIndicator());
@@ -279,54 +279,83 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
         _projectPositionNotifier.value <= overlay.endTime
     );
 
-    return GestureDetector(
-      onTap: () {
-        if (_textFocusNode.hasFocus) {
-          _textFocusNode.unfocus();
-        } else {
-          setState(() => _selectedOverlayId = null);
-        }
-      },
-      child: AspectRatio(
-        aspectRatio: widget.canvasAspectRatio ?? intrinsicAspectRatio,
-        child: Container(
-          color: Colors.black,
-          child: ClipRect(
-            child: Transform(
-              transform: widget.canvasTransform ?? Matrix4.identity(),
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: intrinsicAspectRatio,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (_videoController != null) VideoPlayer(_videoController!)
-                      else FutureBuilder<File?>(
-                        future: currentClip.asset.file,
-                        builder: (context, snapshot) {
-                           if(snapshot.hasData && snapshot.data != null) {
-                              return Image.file(snapshot.data!, fit: BoxFit.cover);
+    return AspectRatio(
+      aspectRatio: widget.canvasAspectRatio ?? intrinsicAspectRatio,
+      child: Container(
+        color: Colors.black,
+        child: ClipRect(
+          child: Transform(
+            transform: widget.canvasTransform ?? Matrix4.identity(),
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: intrinsicAspectRatio,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    // Layer 0: Video or Image content
+                    if (_videoController != null) VideoPlayer(_videoController!)
+                    else FutureBuilder<File?>(
+                      future: currentClip.asset.file,
+                      builder: (context, snapshot) {
+                          if(snapshot.hasData && snapshot.data != null) {
+                            return Image.file(snapshot.data!, fit: BoxFit.cover);
+                          }
+                          return Container(color: Colors.black);
+                      },
+                    ),
+                    
+                    // Layer 1: Deselection and Play/Pause Gesture Detector
+                    Positioned.fill(
+                      child: GestureDetector(
+                        onTap: () {
+                           if (_textFocusNode.hasFocus) {
+                            _textFocusNode.unfocus();
+                           } else if (_selectedOverlayId != null) {
+                            setState(() => _selectedOverlayId = null);
+                           } else {
+                            _togglePlayPause();
                            }
-                           return Container(color: Colors.black);
                         },
+                        child: Container(color: Colors.transparent),
                       ),
-                      ...visibleOverlays.map((overlay) {
-                        return InteractiveTextWidget(
-                          textOverlay: overlay,
-                          isSelected: _selectedOverlayId == overlay.id,
-                          onTap: () => setState(() {
-                            _selectedOverlayId = overlay.id;
-                            _textEditingController.text = overlay.text;
-                          }),
-                          onDrag: (pos) => _updateSelectedOverlay(overlay..position = pos),
-                          onScaleAndRotate: (scale, angle) => _updateSelectedOverlay(
-                            overlay..scale = scale..angle = angle
+                    ),
+
+                    // Layer 2: Interactive Text Overlays
+                    ...visibleOverlays.map((overlay) {
+                      return InteractiveTextWidget(
+                        textOverlay: overlay,
+                        isSelected: _selectedOverlayId == overlay.id,
+                        onTap: () => setState(() {
+                          _selectedOverlayId = overlay.id;
+                          _textEditingController.text = overlay.text;
+                        }),
+                        onDrag: (pos) => _updateSelectedOverlay(overlay..position = pos),
+                        onScaleAndRotate: (scale, angle) => _updateSelectedOverlay(
+                          overlay..scale = scale..angle = angle
+                        ),
+                        onDelete: () => _deleteOverlay(overlay.id),
+                      );
+                    }).toList(),
+
+                    // Layer 3: Play/Pause Icon Overlay
+                    Center(
+                      child: AnimatedOpacity(
+                        opacity: _isPlaying ? 0.0 : 1.0,
+                        duration: const Duration(milliseconds: 300),
+                        child: IgnorePointer(
+                          child: Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: Colors.black.withOpacity(0.6),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.play_arrow, color: Colors.white, size: 30),
                           ),
-                          onDelete: () => _deleteOverlay(overlay.id),
-                        );
-                      }).toList(),
-                    ],
-                  ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -424,7 +453,7 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
         bottom: 0,
         child: Container(
           width: 3,
-          height: constraints.maxHeight, // Span the full height of the parent
+          height: constraints.maxHeight,
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(2),
