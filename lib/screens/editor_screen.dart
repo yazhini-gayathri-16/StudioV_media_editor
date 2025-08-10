@@ -1,4 +1,4 @@
-// lib/screens/editor_screen.dart
+// lib/screens/editor_screen.dart - FIXED VERSION
 
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -126,13 +126,14 @@ class _EditorScreenState extends State<EditorScreen> {
     
     _projectPositionNotifier.value = newPosition;
 
+    // FIXED: Improved timeline scroll sync
     if (_isPlaying && _timelineScrollController.hasClients) {
       final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
       final double viewportWidth = _timelineScrollController.position.viewportDimension;
       final double currentOffset = _timelineScrollController.offset;
       
-      final double safeZoneStart = currentOffset + viewportWidth * 0.4;
-      final double safeZoneEnd = currentOffset + viewportWidth * 0.6;
+      final double safeZoneStart = currentOffset + viewportWidth * 0.3;
+      final double safeZoneEnd = currentOffset + viewportWidth * 0.7;
 
       if (playheadX < safeZoneStart || playheadX > safeZoneEnd) {
         final double targetOffset = playheadX - (viewportWidth / 2);
@@ -144,7 +145,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
         _timelineScrollController.animateTo(
           clampedOffset,
-          duration: const Duration(milliseconds: 300),
+          duration: const Duration(milliseconds: 200), // Reduced duration for smoother tracking
           curve: Curves.easeOut,
         );
       }
@@ -192,27 +193,30 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _navigateToTextEditor() async {
-    if (widget.mediaClips.isEmpty) return;
-    if (_isPlaying) await _togglePlayPause();
+      if (widget.mediaClips.isEmpty) return;
+      if (_isPlaying) await _togglePlayPause();
 
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => TextEditorScreen(
-          mediaClips: _mediaClips,
-          canvasAspectRatio: _aspectRatios[_mediaClips[_currentClipIndex].asset.id],
-          canvasTransform: _transformations[_mediaClips[_currentClipIndex].asset.id],
-          videoManager: _videoManager,
-          initialOverlays: _projectTextOverlays,
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => TextEditorScreen(
+            mediaClips: _mediaClips,
+            canvasAspectRatio: _aspectRatios[_mediaClips[_currentClipIndex].asset.id],
+            canvasTransform: _transformations[_mediaClips[_currentClipIndex].asset.id],
+            videoManager: _videoManager,
+            initialOverlays: _projectTextOverlays,
+          ),
         ),
-      ),
-    );
+      );
 
-    if (result is TextEditorResult) {
-      setState(() {
-        _projectTextOverlays = result.overlays;
-      });
-    }
+      // Check if the result is valid and is of type TextEditorResult
+      if (result != null && result is TextEditorResult) {
+        // Update the state with the new list of overlays
+        setState(() {
+          _projectTextOverlays = result.overlays;
+        });
+      }
+      
   }
 
   Future<void> _initializeCurrentMedia({bool wasPlaying = false}) async {
@@ -661,7 +665,7 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // --- MODIFIED: Added a Stack to render the playhead on top of the clips ---
+  // FIXED: Improved timeline with better playhead positioning
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -672,22 +676,26 @@ class _EditorScreenState extends State<EditorScreen> {
           child: ValueListenableBuilder<Duration>(
             valueListenable: _projectPositionNotifier,
             builder: (context, position, child) {
-              return Stack(
-                children: [
-                  // Layer 1: The clips
-                  ProportionalTimelineWidget(
-                    mediaClips: _mediaClips,
-                    currentClipIndex: _currentClipIndex,
-                    currentProjectPosition: position,
-                    totalProjectDuration: _totalProjectDuration,
-                    onClipTap: _jumpToClip,
-                    onTrimChanged: _onClipTrimmed,
-                    timelineWidth: totalTimelineWidth,
-                    pixelsPerSecond: pixelsPerSecond,
-                  ),
-                  // Layer 2: The playhead
-                  _buildPlayhead(totalTimelineWidth, position),
-                ],
+              return SizedBox(
+                width: totalTimelineWidth,
+                height: 80,
+                child: Stack(
+                  children: [
+                    // Layer 1: The clips
+                    ProportionalTimelineWidget(
+                      mediaClips: _mediaClips,
+                      currentClipIndex: _currentClipIndex,
+                      currentProjectPosition: position,
+                      totalProjectDuration: _totalProjectDuration,
+                      onClipTap: _jumpToClip,
+                      onTrimChanged: _onClipTrimmed,
+                      timelineWidth: totalTimelineWidth,
+                      pixelsPerSecond: pixelsPerSecond,
+                    ),
+                    // Layer 2: The playhead - FIXED
+                    _buildPlayhead(totalTimelineWidth, position),
+                  ],
+                ),
               );
             },
           ),
@@ -696,21 +704,49 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // --- NEW: Helper method to build the playhead ---
+  // FIXED: Enhanced playhead with better visual design
   Widget _buildPlayhead(double timelineWidth, Duration position) {
     final double indicatorPosition = (position.inMilliseconds / 1000.0 * pixelsPerSecond)
         .clamp(0.0, timelineWidth);
 
     return Positioned(
-      left: indicatorPosition,
+      left: indicatorPosition - 1.5, // Center the line
       top: 0,
       bottom: 0,
       child: Container(
         width: 3,
         decoration: BoxDecoration(
-          color: const Color.fromARGB(255, 235, 13, 13),
-          borderRadius: BorderRadius.circular(2),
-          boxShadow: [ BoxShadow(color: Colors.black.withOpacity(0.6), blurRadius: 4) ],
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(1.5),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.8),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            // Top triangle indicator
+            Container(
+              width: 0,
+              height: 0,
+              decoration: const BoxDecoration(
+                border: Border(
+                  left: BorderSide(width: 6, color: Colors.transparent),
+                  right: BorderSide(width: 6, color: Colors.transparent),
+                  bottom: BorderSide(width: 8, color: Colors.white),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Container(
+                width: 3,
+                color: Colors.white,
+              ),
+            ),
+          ],
         ),
       ),
     );
