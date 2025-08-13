@@ -56,7 +56,7 @@ class VideoPlayerManager {
       _activeController = VideoPlayerController.file(
         file,
         videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: false,
+          mixWithOthers: true,
           allowBackgroundPlayback: false,
         ),
       );
@@ -82,7 +82,7 @@ class VideoPlayerManager {
       final controller = VideoPlayerController.file(
         file,
         videoPlayerOptions: VideoPlayerOptions(
-          mixWithOthers: false,
+          mixWithOthers: true,
           allowBackgroundPlayback: false,
         ),
       );

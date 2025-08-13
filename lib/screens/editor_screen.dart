@@ -1,9 +1,15 @@
-// lib/screens/editor_screen.dart - FIXED VERSION
 
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
+
+// NEW IMPORTS
+import '../models/audio_clip_model.dart';
+import 'audio_editor_screen.dart';
+import '../services/audio_manager.dart';
+import '../widgets/audio_timeline_widget.dart';
+
 import '../models/media_clip.dart';
 import '../models/text_overlay_model.dart';
 import '../widgets/proportional_timeline_widget.dart';
@@ -36,6 +42,8 @@ class _EditorScreenState extends State<EditorScreen> {
   int _imageStartTime = 0;
 
   final VideoPlayerManager _videoManager = VideoPlayerManager();
+  // NEW: Audio Manager instance
+  final AudioManager _audioManager = AudioManager();
 
   final ScrollController _timelineScrollController = ScrollController();
   final ScrollController _rulerScrollController = ScrollController();
@@ -46,6 +54,8 @@ class _EditorScreenState extends State<EditorScreen> {
   final Map<String, Matrix4?> _transformations = {};
 
   List<TextOverlay> _projectTextOverlays = [];
+  // NEW: State for audio clips
+  List<AudioClip> _projectAudioClips = [];
 
   @override
   void initState() {
@@ -71,6 +81,8 @@ class _EditorScreenState extends State<EditorScreen> {
     _rulerScrollController.dispose();
 
     _videoManager.dispose();
+    // NEW: Dispose audio manager
+    _audioManager.dispose();
     _positionTimer?.cancel();
     _projectPositionNotifier.dispose();
     super.dispose();
@@ -125,8 +137,9 @@ class _EditorScreenState extends State<EditorScreen> {
     }
     
     _projectPositionNotifier.value = newPosition;
+    // NEW: Sync audio with the new position
+    _audioManager.seek(newPosition);
 
-    // FIXED: Improved timeline scroll sync
     if (_isPlaying && _timelineScrollController.hasClients) {
       final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
       final double viewportWidth = _timelineScrollController.position.viewportDimension;
@@ -145,7 +158,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
         _timelineScrollController.animateTo(
           clampedOffset,
-          duration: const Duration(milliseconds: 200), // Reduced duration for smoother tracking
+          duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
         );
       }
@@ -209,14 +222,36 @@ class _EditorScreenState extends State<EditorScreen> {
         ),
       );
 
-      // Check if the result is valid and is of type TextEditorResult
       if (result != null && result is TextEditorResult) {
-        // Update the state with the new list of overlays
         setState(() {
           _projectTextOverlays = result.overlays;
         });
       }
-      
+  }
+
+  // NEW: Navigate to the Audio Editor Screen
+  void _navigateToAudioEditor() async {
+    if (widget.mediaClips.isEmpty) return;
+    if (_isPlaying) await _togglePlayPause();
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AudioEditorScreen(
+          mediaClips: _mediaClips,
+          initialAudioClips: _projectAudioClips,
+          videoManager: _videoManager,
+        ),
+      ),
+    );
+
+    if (result != null && result is AudioEditorResult) {
+      setState(() {
+        _projectAudioClips = result.audioClips;
+        // Update audio manager with the new clips
+        _audioManager.setClips(_projectAudioClips);
+      });
+    }
   }
 
   Future<void> _initializeCurrentMedia({bool wasPlaying = false}) async {
@@ -281,6 +316,8 @@ class _EditorScreenState extends State<EditorScreen> {
     } else {
       setState(() { _isPlaying = false; });
       await _videoController?.pause();
+      // NEW: Pause audio when project ends
+      await _audioManager.pause();
       _projectPositionNotifier.value = _totalProjectDuration;
     }
   }
@@ -317,6 +354,14 @@ class _EditorScreenState extends State<EditorScreen> {
   
   Future<void> _togglePlayPause() async {
     setState(() { _isPlaying = !_isPlaying; });
+
+    if (_isPlaying) {
+      // NEW: Play audio
+      await _audioManager.play(_projectPositionNotifier.value);
+    } else {
+      // NEW: Pause audio
+      await _audioManager.pause();
+    }
 
     if (_mediaClips[_currentClipIndex].asset.type == AssetType.video) {
       if (_videoController != null && _isVideoInitialized) {
@@ -369,6 +414,9 @@ class _EditorScreenState extends State<EditorScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // UPDATED: The height of the timeline container is now dynamic
+    final double timelineHeight = 140.0 + (_projectAudioClips.length * 50.0);
+
     return Scaffold(
       backgroundColor: const Color(0xFF1A1A1A),
       appBar: AppBar(
@@ -502,7 +550,13 @@ class _EditorScreenState extends State<EditorScreen> {
                   false, 
                   onPressed: _navigateToCanvasScreen,
                 ),
-                _buildToolButton(Icons.music_note, 'Audio', false),
+                // UPDATED: Audio button now navigates to the new screen
+                _buildToolButton(
+                  Icons.music_note, 
+                  'Audio', 
+                  false,
+                  onPressed: _navigateToAudioEditor,
+                ),
                 _buildToolButton(Icons.emoji_emotions, 'Sticker', false),
                 _buildToolButton(
                   Icons.text_fields, 
@@ -516,29 +570,29 @@ class _EditorScreenState extends State<EditorScreen> {
               ],
             ),
           ),
+          // UPDATED: Timeline container now has a dynamic height
           Container(
-            height: 140,
+            height: timelineHeight,
             color: const Color(0xFF1A1A1A),
             child: Column(
               children: [
-                Row(
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.all(16),
-                      child: FloatingActionButton(
-                        onPressed: () {},
-                        backgroundColor: Colors.red,
-                        mini: true,
-                        child: const Icon(Icons.add, color: Colors.white),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Container(
+                        margin: const EdgeInsets.all(16),
+                        child: FloatingActionButton(
+                          onPressed: () {},
+                          backgroundColor: Colors.red,
+                          mini: true,
+                          child: const Icon(Icons.add, color: Colors.white),
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: SizedBox(
-                        height: 80,
+                      Expanded(
                         child: _buildProportionalTimeline(),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
                 Container(
                   height: 40,
@@ -665,7 +719,7 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // FIXED: Improved timeline with better playhead positioning
+  // UPDATED: This now builds the video, text, AND audio timelines
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -678,21 +732,40 @@ class _EditorScreenState extends State<EditorScreen> {
             builder: (context, position, child) {
               return SizedBox(
                 width: totalTimelineWidth,
-                height: 80,
                 child: Stack(
                   children: [
-                    // Layer 1: The clips
-                    ProportionalTimelineWidget(
-                      mediaClips: _mediaClips,
-                      currentClipIndex: _currentClipIndex,
-                      currentProjectPosition: position,
-                      totalProjectDuration: _totalProjectDuration,
-                      onClipTap: _jumpToClip,
-                      onTrimChanged: _onClipTrimmed,
-                      timelineWidth: totalTimelineWidth,
-                      pixelsPerSecond: pixelsPerSecond,
+                    // Layer 1: The video clips at the bottom
+                    Positioned(
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      height: 80,
+                      child: ProportionalTimelineWidget(
+                        mediaClips: _mediaClips,
+                        currentClipIndex: _currentClipIndex,
+                        currentProjectPosition: position,
+                        totalProjectDuration: _totalProjectDuration,
+                        onClipTap: _jumpToClip,
+                        onTrimChanged: _onClipTrimmed,
+                        timelineWidth: totalTimelineWidth,
+                        pixelsPerSecond: pixelsPerSecond,
+                      ),
                     ),
-                    // Layer 2: The playhead - FIXED
+                    // NEW: Layer 2: The audio clips, stacked above the video
+                    ..._projectAudioClips.asMap().entries.map((entry) {
+                      int index = entry.key;
+                      AudioClip clip = entry.value;
+                      return AudioTimelineWidget(
+                        audioClip: clip,
+                        pixelsPerSecond: pixelsPerSecond,
+                        isSelected: false, // Not selectable in main editor
+                        topPosition: 10.0 + (index * 50.0),
+                        totalProjectDuration: _totalProjectDuration,
+                        onTap: () {}, // No action on tap here
+                        onDurationChanged: (_, __) {}, onPositionChanged: (Duration dragDelta) {  }, // Not editable here
+                      );
+                    }).toList(),
+                    // Layer 3: The playhead
                     _buildPlayhead(totalTimelineWidth, position),
                   ],
                 ),
@@ -704,7 +777,6 @@ class _EditorScreenState extends State<EditorScreen> {
     );
   }
 
-  // FIXED: Enhanced playhead with better visual design
   Widget _buildPlayhead(double timelineWidth, Duration position) {
     final double indicatorPosition = (position.inMilliseconds / 1000.0 * pixelsPerSecond)
         .clamp(0.0, timelineWidth);
@@ -728,7 +800,6 @@ class _EditorScreenState extends State<EditorScreen> {
         ),
         child: Column(
           children: [
-            // Top triangle indicator
             Container(
               width: 0,
               height: 0,
@@ -783,6 +854,8 @@ class _EditorScreenState extends State<EditorScreen> {
               Text('Total Duration: ${_formatDuration(_totalProjectDuration)}', style: const TextStyle(color: Colors.white70)),
               const SizedBox(height: 10),
               Text('Clips: ${_mediaClips.length}', style: const TextStyle(color: Colors.white70)),
+              const SizedBox(height: 10),
+              Text('Audio Tracks: ${_projectAudioClips.length}', style: const TextStyle(color: Colors.white70)),
             ],
           ),
           actions: [
