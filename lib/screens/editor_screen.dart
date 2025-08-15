@@ -1,4 +1,3 @@
-
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -33,10 +32,15 @@ class _EditorScreenState extends State<EditorScreen> {
   VideoPlayerController? _videoController;
   bool _isPlaying = false;
   bool _isVideoInitialized = false;
+  bool _isTransitioning = false;
+  DateTime _playbackStartTime = DateTime.now();
+  Duration _positionAtPlaybackStart = Duration.zero;
   Duration _totalProjectDuration = Duration.zero;
   static const double pixelsPerSecond = 20.0;
 
-  final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(Duration.zero);
+  final ValueNotifier<Duration> _projectPositionNotifier = ValueNotifier(
+    Duration.zero,
+  );
   List<MediaClip> _mediaClips = [];
   Timer? _positionTimer;
   int _imageStartTime = 0;
@@ -49,7 +53,7 @@ class _EditorScreenState extends State<EditorScreen> {
   final ScrollController _rulerScrollController = ScrollController();
 
   int _mediaInitVersion = 0;
-  
+
   final Map<String, double?> _aspectRatios = {};
   final Map<String, Matrix4?> _transformations = {};
 
@@ -68,7 +72,7 @@ class _EditorScreenState extends State<EditorScreen> {
 
     _initializeCurrentMedia();
     _startPositionTimer();
-    _preloadInitialVideos(); 
+    _preloadInitialVideos();
   }
 
   @override
@@ -89,13 +93,17 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _syncRulerScroll() {
-    if (_rulerScrollController.hasClients && !_rulerScrollController.position.isScrollingNotifier.value && _rulerScrollController.offset != _timelineScrollController.offset) {
+    if (_rulerScrollController.hasClients &&
+        !_rulerScrollController.position.isScrollingNotifier.value &&
+        _rulerScrollController.offset != _timelineScrollController.offset) {
       _rulerScrollController.jumpTo(_timelineScrollController.offset);
     }
   }
 
   void _syncTimelineScroll() {
-    if (_timelineScrollController.hasClients && !_timelineScrollController.position.isScrollingNotifier.value && _timelineScrollController.offset != _rulerScrollController.offset) {
+    if (_timelineScrollController.hasClients &&
+        !_timelineScrollController.position.isScrollingNotifier.value &&
+        _timelineScrollController.offset != _rulerScrollController.offset) {
       _timelineScrollController.jumpTo(_rulerScrollController.offset);
     }
   }
@@ -110,47 +118,51 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _updateProjectPosition() {
-    if (_currentClipIndex >= _mediaClips.length || !mounted) return;
+    if (!_isPlaying || _isTransitioning || !mounted) return;
 
+    // --- NEW: This is the new, reliable logic for updating the timeline ---
+
+    // 1. Calculate the new position based on real-world time elapsed
+    final elapsed = DateTime.now().difference(_playbackStartTime);
+    final newPosition = _positionAtPlaybackStart + elapsed;
+
+    // 2. Update the ValueNotifier. This will make the white line move.
+    final clampedPosition = newPosition.clamp(
+      Duration.zero,
+      _totalProjectDuration,
+    );
+    _projectPositionNotifier.value = clampedPosition;
+
+    // NEW: Sync audio with the new, accurate position
+    _audioManager.seek(clampedPosition);
+
+    // 3. Check if it's time to switch to the next video/image clip
     final currentClip = _mediaClips[_currentClipIndex];
-    Duration newPosition = Duration.zero;
-    for (int i = 0; i < _currentClipIndex; i++) {
-      newPosition += _mediaClips[i].trimmedDuration;
+    final currentClipEndPosition =
+        _getClipStartOffset(_currentClipIndex) + currentClip.trimmedDuration;
+
+    if (clampedPosition >= currentClipEndPosition &&
+        _currentClipIndex < _mediaClips.length - 1) {
+      _moveToNextClip();
+    } else if (clampedPosition >= _totalProjectDuration) {
+      // End of the entire project
+      if (_isPlaying) _togglePlayPause();
+      _seekToPosition(Duration.zero);
     }
 
-    if (currentClip.asset.type == AssetType.video && _videoController != null && _isVideoInitialized) {
-      final videoPosition = _videoController!.value.position;
-      final clipProgressMs = (videoPosition - currentClip.startTime).inMilliseconds.clamp(0, currentClip.trimmedDuration.inMilliseconds);
-      newPosition += Duration(milliseconds: clipProgressMs);
-
-      if (videoPosition >= currentClip.endTime) {
-        _moveToNextClip();
-      }
-    } else if (currentClip.asset.type == AssetType.image) {
-      final elapsed = DateTime.now().millisecondsSinceEpoch - _imageStartTime;
-      final imageProgressMs = elapsed.clamp(0, currentClip.trimmedDuration.inMilliseconds);
-      newPosition += Duration(milliseconds: imageProgressMs);
-
-      if (Duration(milliseconds: imageProgressMs) >= currentClip.trimmedDuration) {
-        _moveToNextClip();
-      }
-    }
-    
-    _projectPositionNotifier.value = newPosition;
-    // NEW: Sync audio with the new position
-    _audioManager.seek(newPosition);
-
+    // 4. Auto-scroll the timeline (this part remains the same)
     if (_isPlaying && _timelineScrollController.hasClients) {
-      final double playheadX = newPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
-      final double viewportWidth = _timelineScrollController.position.viewportDimension;
+      final double playheadX =
+          clampedPosition.inMilliseconds / 1000.0 * pixelsPerSecond;
+      final double viewportWidth =
+          _timelineScrollController.position.viewportDimension;
       final double currentOffset = _timelineScrollController.offset;
-      
+
       final double safeZoneStart = currentOffset + viewportWidth * 0.3;
       final double safeZoneEnd = currentOffset + viewportWidth * 0.7;
 
       if (playheadX < safeZoneStart || playheadX > safeZoneEnd) {
         final double targetOffset = playheadX - (viewportWidth / 2);
-        
         final double clampedOffset = targetOffset.clamp(
           _timelineScrollController.position.minScrollExtent,
           _timelineScrollController.position.maxScrollExtent,
@@ -165,15 +177,72 @@ class _EditorScreenState extends State<EditorScreen> {
     }
   }
 
+  // NEW: Add a helper to get the start time of any clip
+  Duration _getClipStartOffset(int index) {
+    Duration offset = Duration.zero;
+    for (int i = 0; i < index; i++) {
+      offset += _mediaClips[i].trimmedDuration;
+    }
+    return offset;
+  }
+
+  // NEW: Add a seek function to handle manual seeking and resetting the clock
+  Future<void> _seekToPosition(Duration targetPosition) async {
+    final clampedPosition = targetPosition.clamp(
+      Duration.zero,
+      _totalProjectDuration,
+    );
+    _projectPositionNotifier.value = clampedPosition;
+
+    // Reset the master clock's reference points whenever we seek
+    _positionAtPlaybackStart = clampedPosition;
+    _playbackStartTime = DateTime.now();
+
+    int targetClipIndex = 0;
+    Duration accumulatedDuration = Duration.zero;
+    for (int i = 0; i < _mediaClips.length; i++) {
+      final clipDuration = _mediaClips[i].trimmedDuration;
+      if (targetPosition <= accumulatedDuration + clipDuration) {
+        targetClipIndex = i;
+        break;
+      }
+      accumulatedDuration += clipDuration;
+    }
+
+    if (targetClipIndex != _currentClipIndex) {
+      setState(() => _currentClipIndex = targetClipIndex);
+      await _initializeCurrentMedia(wasPlaying: _isPlaying);
+    }
+
+    final positionInClip = targetPosition - accumulatedDuration;
+    final currentClip = _mediaClips[_currentClipIndex];
+
+    if (currentClip.asset.type == AssetType.video && _videoController != null) {
+      final seekTime = (currentClip.startTime + positionInClip).clamp(
+        currentClip.startTime,
+        currentClip.endTime,
+      );
+      await _videoController!.seekTo(seekTime);
+    } else if (currentClip.asset.type == AssetType.image) {
+      _imageStartTime =
+          DateTime.now().millisecondsSinceEpoch - positionInClip.inMilliseconds;
+    }
+
+    await _audioManager.seek(targetPosition);
+  }
+
   void _calculateTotalDuration() {
-    _totalProjectDuration = _mediaClips.fold(Duration.zero, (total, clip) => total + clip.trimmedDuration);
+    _totalProjectDuration = _mediaClips.fold(
+      Duration.zero,
+      (total, clip) => total + clip.trimmedDuration,
+    );
     if (mounted) setState(() {});
   }
 
   void _navigateToCanvasScreen() async {
     if (_mediaClips.isEmpty) return;
     final currentClip = _mediaClips[_currentClipIndex];
-    
+
     if (_isPlaying) await _togglePlayPause();
 
     final result = await Navigator.push(
@@ -206,27 +275,29 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   void _navigateToTextEditor() async {
-      if (widget.mediaClips.isEmpty) return;
-      if (_isPlaying) await _togglePlayPause();
+    if (widget.mediaClips.isEmpty) return;
+    if (_isPlaying) await _togglePlayPause();
 
-      final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => TextEditorScreen(
-            mediaClips: _mediaClips,
-            canvasAspectRatio: _aspectRatios[_mediaClips[_currentClipIndex].asset.id],
-            canvasTransform: _transformations[_mediaClips[_currentClipIndex].asset.id],
-            videoManager: _videoManager,
-            initialOverlays: _projectTextOverlays,
-          ),
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TextEditorScreen(
+          mediaClips: _mediaClips,
+          canvasAspectRatio:
+              _aspectRatios[_mediaClips[_currentClipIndex].asset.id],
+          canvasTransform:
+              _transformations[_mediaClips[_currentClipIndex].asset.id],
+          videoManager: _videoManager,
+          initialOverlays: _projectTextOverlays,
         ),
-      );
+      ),
+    );
 
-      if (result != null && result is TextEditorResult) {
-        setState(() {
-          _projectTextOverlays = result.overlays;
-        });
-      }
+    if (result != null && result is TextEditorResult) {
+      setState(() {
+        _projectTextOverlays = result.overlays;
+      });
+    }
   }
 
   // NEW: Navigate to the Audio Editor Screen
@@ -260,7 +331,7 @@ class _EditorScreenState extends State<EditorScreen> {
     if (_currentClipIndex >= _mediaClips.length) return;
     final currentClip = _mediaClips[_currentClipIndex];
 
-    if(mounted) {
+    if (mounted) {
       setState(() {
         _isVideoInitialized = false;
       });
@@ -276,7 +347,8 @@ class _EditorScreenState extends State<EditorScreen> {
 
         setState(() {
           _videoController = controller;
-          _isVideoInitialized = controller != null && controller.value.isInitialized;
+          _isVideoInitialized =
+              controller != null && controller.value.isInitialized;
         });
 
         if (wasPlaying && _videoController != null) {
@@ -284,7 +356,8 @@ class _EditorScreenState extends State<EditorScreen> {
           await _videoController!.play();
         }
         _preloadNextVideos();
-      } else { // Image asset
+      } else {
+        // Image asset
         await _videoManager.getController(currentClip);
 
         if (!mounted || requestVersion != _mediaInitVersion) return;
@@ -297,28 +370,43 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     } catch (e) {
       print('Error initializing media: $e');
-       if (mounted && requestVersion == _mediaInitVersion) {
-         setState(() {
-            _isVideoInitialized = false;
-         });
-       }
+      if (mounted && requestVersion == _mediaInitVersion) {
+        setState(() {
+          _isVideoInitialized = false;
+        });
+      }
     }
   }
 
   Future<void> _moveToNextClip() async {
-    _mediaInitVersion++;
+    // NEW: Add guard to prevent multiple transitions at once
+    if (_isTransitioning) return;
 
-    if (_currentClipIndex < _mediaClips.length - 1) {
-      setState(() {
-        _currentClipIndex++;
-      });
-      await _initializeCurrentMedia(wasPlaying: _isPlaying);
-    } else {
-      setState(() { _isPlaying = false; });
-      await _videoController?.pause();
-      // NEW: Pause audio when project ends
-      await _audioManager.pause();
-      _projectPositionNotifier.value = _totalProjectDuration;
+    setState(() {
+      _isTransitioning = true;
+    });
+
+    try {
+      if (_currentClipIndex < _mediaClips.length - 1) {
+        setState(() {
+          _currentClipIndex++;
+        });
+        await _initializeCurrentMedia(wasPlaying: _isPlaying);
+      } else {
+        if (mounted)
+          setState(() {
+            _isPlaying = false;
+          });
+        await _videoController?.pause();
+        await _audioManager.pause();
+        _projectPositionNotifier.value = _totalProjectDuration;
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isTransitioning = false;
+        });
+      }
     }
   }
 
@@ -351,51 +439,64 @@ class _EditorScreenState extends State<EditorScreen> {
       }
     }
   }
-  
+
   Future<void> _togglePlayPause() async {
-    setState(() { _isPlaying = !_isPlaying; });
+    setState(() {
+      _isPlaying = !_isPlaying;
+    });
 
     if (_isPlaying) {
-      // NEW: Play audio
-      await _audioManager.play(_projectPositionNotifier.value);
-    } else {
-      // NEW: Pause audio
-      await _audioManager.pause();
-    }
+      // NEW: Record the starting point for our new "master clock"
+      _playbackStartTime = DateTime.now();
+      _positionAtPlaybackStart = _projectPositionNotifier.value;
 
-    if (_mediaClips[_currentClipIndex].asset.type == AssetType.video) {
-      if (_videoController != null && _isVideoInitialized) {
-        final currentClip = _mediaClips[_currentClipIndex];
-        if (_isPlaying) {
+      await _audioManager.play(_projectPositionNotifier.value);
+
+      if (_mediaClips[_currentClipIndex].asset.type == AssetType.video) {
+        if (_videoController != null && _isVideoInitialized) {
+          final currentClip = _mediaClips[_currentClipIndex];
           if (_videoController!.value.position >= currentClip.endTime) {
             await _videoController!.seekTo(currentClip.startTime);
           }
           await _videoController!.play();
-        } else {
-          await _videoController!.pause();
         }
+      } else {
+        // Image
+        final clipStartOffset = _getClipStartOffset(_currentClipIndex);
+        final positionInClip = _projectPositionNotifier.value - clipStartOffset;
+        _imageStartTime =
+            DateTime.now().millisecondsSinceEpoch -
+            positionInClip.inMilliseconds;
       }
-    } else { // Image
-      if (_isPlaying) {
-        _imageStartTime = DateTime.now().millisecondsSinceEpoch;
+    } else {
+      await _audioManager.pause();
+      if (_mediaClips[_currentClipIndex].asset.type == AssetType.video) {
+        await _videoController?.pause();
       }
     }
   }
-  
+
   Future<void> _preloadNextVideos() async {
-      for (int i = 1; i <= 2; i++) {
-        if (_currentClipIndex + i < _mediaClips.length) {
-          final clip = _mediaClips[_currentClipIndex + i];
-          if (clip.asset.type == AssetType.video) {
-            await _videoManager.preloadNextVideo(clip);
-          }
+    for (int i = 1; i <= 2; i++) {
+      if (_currentClipIndex + i < _mediaClips.length) {
+        final clip = _mediaClips[_currentClipIndex + i];
+        if (clip.asset.type == AssetType.video) {
+          await _videoManager.preloadNextVideo(clip);
         }
       }
+    }
   }
 
-  void _onClipTrimmed(int clipIndex, Duration newStartTime, Duration newEndTime) {
+  void _onClipTrimmed(
+    int clipIndex,
+    Duration newStartTime,
+    Duration newEndTime,
+  ) {
     setState(() {
-      _mediaClips[clipIndex] = _mediaClips[clipIndex].copyWith(startTime: newStartTime, endTime: newEndTime);
+      _mediaClips[clipIndex] = _mediaClips[clipIndex].copyWith(
+        startTime: newStartTime,
+        endTime: newEndTime,
+      );
     });
     _calculateTotalDuration();
     if (clipIndex == _currentClipIndex) {
@@ -461,7 +562,7 @@ class _EditorScreenState extends State<EditorScreen> {
             flex: 3,
             child: Container(
               width: double.infinity,
-              color: const Color(0xFF1A1A1A), 
+              color: const Color(0xFF1A1A1A),
               child: Center(
                 child: Stack(
                   alignment: Alignment.center,
@@ -545,22 +646,22 @@ class _EditorScreenState extends State<EditorScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 _buildToolButton(
-                  Icons.crop_free, 
-                  'Canvas', 
-                  false, 
+                  Icons.crop_free,
+                  'Canvas',
+                  false,
                   onPressed: _navigateToCanvasScreen,
                 ),
                 // UPDATED: Audio button now navigates to the new screen
                 _buildToolButton(
-                  Icons.music_note, 
-                  'Audio', 
+                  Icons.music_note,
+                  'Audio',
                   false,
                   onPressed: _navigateToAudioEditor,
                 ),
                 _buildToolButton(Icons.emoji_emotions, 'Sticker', false),
                 _buildToolButton(
-                  Icons.text_fields, 
-                  'Text', 
+                  Icons.text_fields,
+                  'Text',
                   false,
                   onPressed: _navigateToTextEditor,
                 ),
@@ -588,9 +689,7 @@ class _EditorScreenState extends State<EditorScreen> {
                           child: const Icon(Icons.add, color: Colors.white),
                         ),
                       ),
-                      Expanded(
-                        child: _buildProportionalTimeline(),
-                      ),
+                      Expanded(child: _buildProportionalTimeline()),
                     ],
                   ),
                 ),
@@ -609,7 +708,10 @@ class _EditorScreenState extends State<EditorScreen> {
 
   Widget _buildPreview() {
     if (_mediaClips.isEmpty || _currentClipIndex >= _mediaClips.length) {
-      return const Text('No media selected', style: TextStyle(color: Colors.white));
+      return const Text(
+        'No media selected',
+        style: TextStyle(color: Colors.white),
+      );
     }
 
     final currentClip = _mediaClips[_currentClipIndex];
@@ -618,7 +720,10 @@ class _EditorScreenState extends State<EditorScreen> {
     Widget? content;
     double? intrinsicAspectRatio;
 
-    if (currentClip.asset.type == AssetType.video && _isVideoInitialized && _videoController != null && _videoController!.value.isInitialized) {
+    if (currentClip.asset.type == AssetType.video &&
+        _isVideoInitialized &&
+        _videoController != null &&
+        _videoController!.value.isInitialized) {
       content = VideoPlayer(_videoController!);
       intrinsicAspectRatio = _videoController!.value.aspectRatio;
     } else if (currentClip.asset.type == AssetType.image) {
@@ -626,17 +731,24 @@ class _EditorScreenState extends State<EditorScreen> {
         future: _buildImagePreview(currentClip.asset),
         builder: (context, snapshot) {
           if (snapshot.hasData) return snapshot.data!;
-          return const CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple));
+          return const CircularProgressIndicator(
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
+          );
         },
       );
       intrinsicAspectRatio = currentClip.asset.width / currentClip.asset.height;
     } else {
-      return const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.purple)));
+      return const Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(Colors.purple),
+        ),
+      );
     }
-    
-    final visibleOverlays = _projectTextOverlays.where((overlay) =>
-      _projectPositionNotifier.value >= overlay.startTime &&
-      _projectPositionNotifier.value <= overlay.endTime
+
+    final visibleOverlays = _projectTextOverlays.where(
+      (overlay) =>
+          _projectPositionNotifier.value >= overlay.startTime &&
+          _projectPositionNotifier.value <= overlay.endTime,
     );
 
     return AspectRatio(
@@ -653,17 +765,19 @@ class _EditorScreenState extends State<EditorScreen> {
                   fit: StackFit.expand,
                   children: [
                     if (content != null) content,
-                    ...visibleOverlays.map((overlay) => Positioned(
-                      left: overlay.position.dx,
-                      top: overlay.position.dy,
-                      child: Transform.rotate(
-                        angle: overlay.angle,
-                        child: Transform.scale(
-                          scale: overlay.scale,
-                          child: Text(overlay.text, style: overlay.style),
+                    ...visibleOverlays.map(
+                      (overlay) => Positioned(
+                        left: overlay.position.dx,
+                        top: overlay.position.dy,
+                        child: Transform.rotate(
+                          angle: overlay.angle,
+                          child: Transform.scale(
+                            scale: overlay.scale,
+                            child: Text(overlay.text, style: overlay.style),
+                          ),
                         ),
                       ),
-                    )),
+                    ),
                   ],
                 ),
               ),
@@ -683,10 +797,18 @@ class _EditorScreenState extends State<EditorScreen> {
     } catch (e) {
       print('Error loading image preview: $e');
     }
-    return const Text('Error loading preview', style: TextStyle(color: Colors.white));
+    return const Text(
+      'Error loading preview',
+      style: TextStyle(color: Colors.white),
+    );
   }
 
-  Widget _buildToolButton(IconData icon, String label, bool hasNotification, {VoidCallback? onPressed}) {
+  Widget _buildToolButton(
+    IconData icon,
+    String label,
+    bool hasNotification, {
+    VoidCallback? onPressed,
+  }) {
     return InkWell(
       onTap: onPressed,
       borderRadius: BorderRadius.circular(8),
@@ -706,13 +828,19 @@ class _EditorScreenState extends State<EditorScreen> {
                     child: Container(
                       width: 8,
                       height: 8,
-                      decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                   ),
               ],
             ),
             const SizedBox(height: 8),
-            Text(label, style: const TextStyle(color: Colors.white, fontSize: 10)),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white, fontSize: 10),
+            ),
           ],
         ),
       ),
@@ -723,7 +851,8 @@ class _EditorScreenState extends State<EditorScreen> {
   Widget _buildProportionalTimeline() {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final double totalTimelineWidth = _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
+        final double totalTimelineWidth =
+            _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
         return SingleChildScrollView(
           controller: _timelineScrollController,
           scrollDirection: Axis.horizontal,
@@ -762,7 +891,9 @@ class _EditorScreenState extends State<EditorScreen> {
                         topPosition: 10.0 + (index * 50.0),
                         totalProjectDuration: _totalProjectDuration,
                         onTap: () {}, // No action on tap here
-                        onDurationChanged: (_, __) {}, onPositionChanged: (Duration dragDelta) {  }, // Not editable here
+                        onDurationChanged: (_, __) {},
+                        onPositionChanged:
+                            (Duration dragDelta) {}, // Not editable here
                       );
                     }).toList(),
                     // Layer 3: The playhead
@@ -778,8 +909,11 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Widget _buildPlayhead(double timelineWidth, Duration position) {
-    final double indicatorPosition = (position.inMilliseconds / 1000.0 * pixelsPerSecond)
-        .clamp(0.0, timelineWidth);
+    final double indicatorPosition =
+        (position.inMilliseconds / 1000.0 * pixelsPerSecond).clamp(
+          0.0,
+          timelineWidth,
+        );
 
     return Positioned(
       left: indicatorPosition - 1.5, // Center the line
@@ -811,12 +945,7 @@ class _EditorScreenState extends State<EditorScreen> {
                 ),
               ),
             ),
-            Expanded(
-              child: Container(
-                width: 3,
-                color: Colors.white,
-              ),
-            ),
+            Expanded(child: Container(width: 3, color: Colors.white)),
           ],
         ),
       ),
@@ -824,18 +953,19 @@ class _EditorScreenState extends State<EditorScreen> {
   }
 
   Widget _buildTimelineRuler() {
-    final double totalTimelineWidth = _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
+    final double totalTimelineWidth =
+        _totalProjectDuration.inMilliseconds / 1000.0 * pixelsPerSecond;
 
     return SingleChildScrollView(
-      controller: _rulerScrollController, 
+      controller: _rulerScrollController,
       scrollDirection: Axis.horizontal,
       physics: const NeverScrollableScrollPhysics(),
       child: SizedBox(
-        width: totalTimelineWidth, 
+        width: totalTimelineWidth,
         height: 40,
         child: TimelineRuler(
           totalDuration: _totalProjectDuration,
-          pixelsPerSecond: pixelsPerSecond, 
+          pixelsPerSecond: pixelsPerSecond,
         ),
       ),
     );
@@ -847,15 +977,27 @@ class _EditorScreenState extends State<EditorScreen> {
       builder: (BuildContext context) {
         return AlertDialog(
           backgroundColor: const Color(0xFF2A2A2A),
-          title: const Text('Export Project', style: TextStyle(color: Colors.white)),
+          title: const Text(
+            'Export Project',
+            style: TextStyle(color: Colors.white),
+          ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Total Duration: ${_formatDuration(_totalProjectDuration)}', style: const TextStyle(color: Colors.white70)),
+              Text(
+                'Total Duration: ${_formatDuration(_totalProjectDuration)}',
+                style: const TextStyle(color: Colors.white70),
+              ),
               const SizedBox(height: 10),
-              Text('Clips: ${_mediaClips.length}', style: const TextStyle(color: Colors.white70)),
+              Text(
+                'Clips: ${_mediaClips.length}',
+                style: const TextStyle(color: Colors.white70),
+              ),
               const SizedBox(height: 10),
-              Text('Audio Tracks: ${_projectAudioClips.length}', style: const TextStyle(color: Colors.white70)),
+              Text(
+                'Audio Tracks: ${_projectAudioClips.length}',
+                style: const TextStyle(color: Colors.white70),
+              ),
             ],
           ),
           actions: [
@@ -867,7 +1009,10 @@ class _EditorScreenState extends State<EditorScreen> {
               onPressed: () {
                 Navigator.pop(context);
               },
-              child: const Text('Export', style: TextStyle(color: Colors.purple)),
+              child: const Text(
+                'Export',
+                style: TextStyle(color: Colors.purple),
+              ),
             ),
           ],
         );

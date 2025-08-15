@@ -294,19 +294,24 @@ class _AudioEditorScreenState extends State<AudioEditorScreen> {
       final audioFile = await result.file;
       if (audioFile == null) return;
 
+      final newClip = AudioClip.fromFile(
+        path: audioFile.path,
+        name: result.title ?? 'Unknown Audio',
+        totalProjectDuration: _totalProjectDuration,
+        audioFileDuration: Duration(seconds: result.duration),
+        playheadPosition: _projectPositionNotifier.value,
+      );
+      
       setState(() {
-        // --- FIXED: Changed from fromAsset to fromFile and passed correct parameters ---
-        final newClip = AudioClip.fromFile(
-          path: audioFile.path,
-          name: result.title ?? 'Unknown Audio',
-          totalProjectDuration: _totalProjectDuration,
-          audioFileDuration: Duration(seconds: result.duration),
-          playheadPosition: _projectPositionNotifier.value,
-        );
         _audioClips.add(newClip);
         _audioManager.setClips(_audioClips);
         _selectedAudioClipId = newClip.id;
       });
+
+      // --- FIX: Re-sync playback state after adding the clip ---
+      // This ensures the current video clip (even if it's the first one)
+      // is correctly positioned and ready to play.
+      await _seekToPosition(_projectPositionNotifier.value);
     }
   }
 

@@ -9,6 +9,7 @@ class AudioClip {
   Duration endTime;
   Duration sourceDuration; // The original duration of the audio file
   double volume;
+  
 
   AudioClip({
     required this.id,
