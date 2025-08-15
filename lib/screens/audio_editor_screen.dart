@@ -73,6 +73,12 @@ class _AudioEditorScreenState extends State<AudioEditorScreen> {
 
   @override
   void dispose() {
+    // FIX: Explicitly pause the video controller and audio manager to prevent
+    // audio from leaking after the screen is closed.
+    _videoController?.pause();
+    _audioManager.pause();
+
+    // Original dispose logic
     _timelineScrollController.dispose();
     _rulerScrollController.dispose();
     _projectPositionNotifier.dispose();
